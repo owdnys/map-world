@@ -46,7 +46,23 @@
     background: rgba(255,255,255,.96);
     box-shadow: 0 4px 20px rgba(0,0,0,.16);
     backdrop-filter: blur(10px);
+    max-width: calc(100vw - 24px);
   }
+
+  /* Coordinate jump box */
+  #gotoInput {
+    width: 190px; padding: 8px 10px;
+    border: 1px solid #d8dee6; border-radius: 8px;
+    font-size: 12px; font-family: Consolas, monospace;
+    color: #334155; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  #gotoInput::placeholder { color: #a8b3c2; }
+  #gotoInput:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,.14);
+  }
+  #gotoInput.bad { border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239,68,68,.14); }
 
   .btn {
     padding: 8px 13px; border: 1px solid #d8dee6; border-radius: 8px;
@@ -238,6 +254,9 @@
   <button class="btn" id="btnReset" title="Reset view">Reset</button>
   <button class="btn" id="btnLocate" title="Find my location">Locate</button>
   <button class="btn" id="btnSave" title="Save cursor position (Ctrl+D)">&#9734; Save</button>
+  <div class="sep"></div>
+  <input id="gotoInput" placeholder="lat, lon  e.g. 13.58,144.92" autocomplete="off"
+         spellcheck="false" title="Type coordinates and press Enter">
 </div>
 
 <div id="layers">
@@ -866,11 +885,25 @@
     requestRender(true);
   }
 
+  // ============================================================
+  //  Coordinate formatting
+  //
+  //  Bare decimals like "24.47980, 118.08940" are ambiguous at a glance:
+  //  nothing tells you which number is latitude and which hemisphere.
+  //  Everything is printed with a hemisphere letter instead.
+  // ============================================================
+  function fmtLat(v) {
+    return Math.abs(v).toFixed(5) + '\u00b0 ' + (v >= 0 ? 'N' : 'S');
+  }
+  function fmtLng(v) {
+    return Math.abs(v).toFixed(5) + '\u00b0 ' + (v >= 0 ? 'E' : 'W');
+  }
+
   function updateLabels() {
     var lat = worldYToLat(state.center.y, state.zoom);
     var lng = worldXToLng(state.center.x, state.zoom);
-    document.getElementById('c-lat').textContent = lat.toFixed(5);
-    document.getElementById('c-lng').textContent = lng.toFixed(5);
+    document.getElementById('c-lat').textContent = fmtLat(lat);
+    document.getElementById('c-lng').textContent = fmtLng(lng);
     zoomLabel.textContent = 'Zoom ' + state.zoom.toFixed(1);
     // keep the cursor/centre readout in sync after any view change
     if (typeof renderCursor === 'function') renderCursor();
@@ -1094,14 +1127,22 @@
   var bookmarks = [];          // [{ lat, lng, zoom }]
   var cursorLL = null;         // last lon/lat under the pointer
 
+  // True when the keystroke belongs to a form field rather than the map.
+  function isTyping(e) {
+    var t = e.target;
+    if (!t) return false;
+    var tag = t.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+  }
+
   function renderCursor() {
     if (cursorLL) {
-      M_LAT.textContent = cursorLL.lat.toFixed(5);
-      M_LNG.textContent = cursorLL.lng.toFixed(5);
+      M_LAT.textContent = fmtLat(cursorLL.lat);
+      M_LNG.textContent = fmtLng(cursorLL.lng);
     } else {
       // pointer outside the map: fall back to the view centre
-      M_LAT.textContent = worldYToLat(state.center.y, state.zoom).toFixed(5);
-      M_LNG.textContent = worldXToLng(state.center.x, state.zoom).toFixed(5);
+      M_LAT.textContent = fmtLat(worldYToLat(state.center.y, state.zoom));
+      M_LNG.textContent = fmtLng(worldXToLng(state.center.x, state.zoom));
     }
   }
 
@@ -1188,8 +1229,86 @@
 
   document.getElementById('btnSave').addEventListener('click', saveCurrentPoint);
 
+  // ============================================================
+  //  Coordinate jump
+  //
+  //  Accepts the shapes people actually paste:
+  //     13.584, 144.924
+  //     13.584N, 144.924E
+  //     -13.584 -144.924
+  //     13.584 144.924
+  // ============================================================
+  var gotoInput = document.getElementById('gotoInput');
+
+  function parseCoordPair(str) {
+    if (!str) return null;
+
+    var s = String(str)
+      .replace(/[°度]/g, ' ')
+      .replace(/[′']/g, ' ')
+      .replace(/[″"]/g, ' ');
+
+    var m = s.match(/(-?\d+(?:\.\d+)?)\s*([NSEWnsew]?)[,\s]+(-?\d+(?:\.\d+)?)\s*([NSEWnsew]?)/);
+    if (!m) return null;
+
+    var lat = parseFloat(m[1]);
+    var lng = parseFloat(m[3]);
+    var a = (m[2] || '').toUpperCase();
+    var b = (m[4] || '').toUpperCase();
+
+    if (a === 'S') lat = -Math.abs(lat);
+    if (b === 'W') lng = -Math.abs(lng);
+
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    // Web Mercator cannot represent beyond ~85 degrees
+    if (lat < -85 || lat > 85) return null;
+    if (lng < -180 || lng > 180) return null;
+
+    return { lat: lat, lng: lng };
+  }
+
+  function doGoto() {
+    var v = parseCoordPair(gotoInput.value);
+    if (!v) {
+      gotoInput.classList.add('bad');
+      toast('Format: 13.584, 144.924  or  13.584N, 144.924E');
+      return;
+    }
+    gotoInput.classList.remove('bad');
+
+    // Amap stops at roughly the Chinese border: a Guam tile comes back as a
+    // ~180-byte blank, so jumping there showed an empty page. Esri's global
+    // imagery has real coverage, so switch before the first tile request.
+    var inAmapCoverage = (v.lat >= 18 && v.lat <= 54 && v.lng >= 73 && v.lng <= 136);
+    if (!inAmapCoverage && state.layer === 'amap') {
+      state.layer = 'esriSat';
+      updateLayerUI('esriSat');
+      toast('Overseas point - switched to Esri Satellite');
+    } else {
+      toast(fmtLat(v.lat) + '   ' + fmtLng(v.lng));
+    }
+
+    setView(v.lat, v.lng, 16);
+  }
+
+  gotoInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doGoto();
+    } else if (e.key === 'Escape') {
+      this.blur();
+      this.classList.remove('bad');
+    }
+  });
+
+  gotoInput.addEventListener('input', function () {
+    this.classList.remove('bad');
+  });
+
   // Ctrl+D / Cmd+D saves the point under the cursor
   window.addEventListener('keydown', function (e) {
+    // never hijack keys while the coordinate box has focus
+    if (isTyping(e)) return;
     if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
       e.preventDefault();
       saveCurrentPoint();
@@ -1202,31 +1321,40 @@
   // ============================================================
   //  Layer switching
   // ============================================================
+  // Programmatic layer switch (also used by the coordinate jump when the
+  // destination is outside Amap's coverage).
+  function updateLayerUI(key) {
+    document.querySelectorAll('#layers button').forEach(function (x) {
+      x.classList.toggle('on', x.getAttribute('data-layer') === key);
+    });
+    document.getElementById('credit').innerHTML = LAYERS[key].credit;
+  }
+
+  function switchLayer(key, quiet) {
+    if (!LAYERS[key] || key === state.layer) return false;
+
+    state.layer = key;
+
+    // swap sources on existing tiles instead of rebuilding
+    var keys = Object.keys(tileMap);
+    for (var i = 0; i < keys.length; i++) {
+      var rec = tileMap[keys[i]];
+      if (!rec) continue;
+      var maxIdx = Math.pow(2, rec.z) - 1;
+      var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
+      rec.ready = false;
+      rec.img.classList.remove('ready');
+      rec.img.src = tileUrl(key, rec.z, wx, rec.y);
+    }
+
+    updateLayerUI(key);
+    if (!quiet) toast('Layer: ' + LAYERS[key].name);
+    return true;
+  }
+
   document.querySelectorAll('#layers button').forEach(function (b) {
     b.addEventListener('click', function () {
-      var key = this.getAttribute('data-layer');
-      if (!LAYERS[key]) return;
-      if (key === state.layer) return;
-
-      state.layer = key;
-
-      // swap sources on existing tiles instead of rebuilding
-      var keys = Object.keys(tileMap);
-      for (var i = 0; i < keys.length; i++) {
-        var rec = tileMap[keys[i]];
-        if (!rec) continue;
-        var maxIdx = Math.pow(2, rec.z) - 1;
-        var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
-        rec.ready = false;
-        rec.img.classList.remove('ready');
-        rec.img.src = tileUrl(key, rec.z, wx, rec.y);
-      }
-
-      document.querySelectorAll('#layers button').forEach(function (x) {
-        x.classList.toggle('on', x === b);
-      });
-      document.getElementById('credit').innerHTML = LAYERS[key].credit;
-      toast('Layer: ' + LAYERS[key].name);
+      switchLayer(this.getAttribute('data-layer'));
     });
   });
 
@@ -1249,6 +1377,7 @@
   //  Keyboard
   // ============================================================
   window.addEventListener('keydown', function (e) {
+    if (isTyping(e)) return;   // arrows/+/- belong to the input, not the map
     var step = 120;
     if (e.key === '+' || e.key === '=') { zoomBy(0.5); e.preventDefault(); }
     else if (e.key === '-' || e.key === '_') { zoomBy(-0.5); e.preventDefault(); }
