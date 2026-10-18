@@ -267,8 +267,12 @@
   // ============================================================
   var tileMap = {};
   var activeZ = 4;       // the level currently being rendered
-  var prevZ = null;      // previous level, kept as a backdrop
-  var prevZTimer = null;
+
+  // Levels kept underneath as a backdrop while the active level loads.
+  // A set (not a single level) so that jumping several zoom levels at
+  // once still has something to show instead of a blank screen.
+  var backdropZ = {};
+  var backdropTimer = null;
 
   var stats = {
     tiles: 0,
@@ -305,8 +309,10 @@
     img.alt = '';
     img.decoding = 'async';
     img.loading = 'eager';
-    // Preconnect warms up the TLS handshake for the tile host.
-    img.crossOrigin = 'anonymous';
+    // NOTE: do NOT set crossOrigin here. Tile servers such as Amap do not
+    // send CORS headers, and requesting the image with crossOrigin makes
+    // the load fail outright - which shows up as a blank map after zooming.
+    // crossOrigin is only needed when reading pixels back through canvas.
 
     var rec = { img: img, z: z, x: x, y: y, ready: false, tries: 0 };
     tileMap[key] = rec;
@@ -449,7 +455,7 @@
       if (!rec) continue;
       if (rec.z === z) {
         if (!need[k]) removeTile(k);
-      } else if (rec.z !== prevZ) {
+      } else if (!backdropZ[rec.z]) {
         removeTile(k);
       }
     }
@@ -491,25 +497,19 @@
   function switchLevel(z) {
     if (z === activeZ) return;
 
-    prevZ = activeZ;
+    // demote the current level to backdrop instead of dropping it
+    backdropZ[activeZ] = true;
+
     activeZ = z;
     lastRect = null;   // force a refill for the new level
 
     relayoutTiles();
-
-    if (prevZTimer) clearTimeout(prevZTimer);
-    prevZTimer = setTimeout(function () {
-      if (prevZ !== null && prevZ !== activeZ) {
-        removeLevel(prevZ);
-        prevZ = null;
-      }
-    }, 1200);
+    scheduleBackdropSweep();
+    pruneBackdrops();
   }
 
-  function maybeDropPrevLevel() {
-    if (prevZ === null || prevZ === activeZ) return;
-
-    // count how much of the active level is ready
+  // How much of the active level has actually loaded
+  function activeReadyRatio() {
     var total = 0, ready = 0;
     for (var k in tileMap) {
       if (!tileMap.hasOwnProperty(k)) continue;
@@ -517,11 +517,53 @@
       total++;
       if (tileMap[k].ready) ready++;
     }
-    if (total > 0 && ready / total >= 0.85) {
-      if (prevZTimer) clearTimeout(prevZTimer);
-      removeLevel(prevZ);
-      prevZ = null;
+    if (total === 0) return 0;
+    return ready / total;
+  }
+
+  // Drop backdrop levels once the active level is mostly visible.
+  // Never drop them while the active level is still mostly empty -
+  // that is exactly what produced the blank map after zooming.
+  function pruneBackdrops() {
+    if (activeReadyRatio() < 0.85) return;
+
+    for (var z in backdropZ) {
+      if (!backdropZ.hasOwnProperty(z)) continue;
+      removeLevel(parseInt(z, 10));
+      delete backdropZ[z];
     }
+
+    if (backdropTimer) {
+      clearTimeout(backdropTimer);
+      backdropTimer = null;
+    }
+  }
+
+  // Safety net: if the active level is still not ready after a long
+  // while, keep at most one backdrop and drop the rest, so memory
+  // cannot grow without bound.
+  function scheduleBackdropSweep() {
+    if (backdropTimer) clearTimeout(backdropTimer);
+    backdropTimer = setTimeout(function () {
+      backdropTimer = null;
+      if (activeReadyRatio() >= 0.85) {
+        pruneBackdrops();
+        return;
+      }
+      var levels = Object.keys(backdropZ);
+      // keep the newest backdrop only
+      for (var i = 0; i < levels.length; i++) {
+        var lz = parseInt(levels[i], 10);
+        if (lz !== activeZ - 1 && lz !== activeZ + 1) {
+          removeLevel(lz);
+          delete backdropZ[levels[i]];
+        }
+      }
+    }, 15000);
+  }
+
+  function maybeDropPrevLevel() {
+    if (activeReadyRatio() >= 0.85) pruneBackdrops();
   }
 
   // ============================================================
@@ -587,7 +629,7 @@
     // rebuild the tile level from scratch
     var keys = Object.keys(tileMap);
     for (var i = 0; i < keys.length; i++) removeTile(keys[i]);
-    prevZ = null;
+    backdropZ = {};
     activeZ = Math.round(state.zoom);
     lastRect = null;
 
@@ -839,7 +881,8 @@
         tiles: stats.tiles,
         pending: stats.pending,
         activeZ: activeZ,
-        prevZ: prevZ,
+        backdrops: Object.keys(backdropZ),
+        readyRatio: Math.round(activeReadyRatio() * 100) / 100,
         zoom: state.zoom
       };
     }
