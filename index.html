@@ -148,6 +148,7 @@
   <button class="btn icon" id="zoomIn" title="Zoom in">+</button>
   <div class="sep"></div>
   <button class="btn" id="btnReset" title="Reset view">Reset</button>
+  <button class="btn" id="btnLocate" title="Find my location">Locate</button>
 </div>
 
 <div id="layers">
@@ -191,8 +192,13 @@
     },
     amap: {
       name: 'Amap',
-      url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      // wprd is the detailed Amap endpoint - roughly 2.6x the tile payload
+      // of webrd and it actually carries house numbers, building outlines
+      // and POIs at z18. That is what "zoom in far enough to see my
+      // neighbourhood" needs.
+      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=8',
       subdomains: ['1', '2', '3', '4'],
+      // z18 has real detail; z19 comes back as a ~190-byte blank placeholder
       max: 18,
       credit: '&copy; Amap'
     },
@@ -274,6 +280,27 @@
   var backdropZ = {};
   var backdropTimer = null;
 
+  // Tiles that scrolled out of view, parked until the view settles.
+  // key -> timestamp when it stopped being needed
+  var spareTiles = {};
+  var tileSweepTimer = null;
+
+  // ------------------------------------------------------------
+  //  Render origin
+  //
+  //  World pixel coordinates at z18 are around 5.5e7. CSS transforms and
+  //  GPU compositing use 32-bit floats, whose integers are only exact up
+  //  to 2^24 (16.7 million). Feeding 5.5e7 into translate() makes the
+  //  browser round the value, and tiles end up pushed off screen - that
+  //  is the "zoomed in to a blank page" bug.
+  //
+  //  Fix: keep every number small. Tile offsetLeft and the container
+  //  translate are both expressed relative to renderOrigin, which tracks
+  //  the viewport and only moves in whole-tile steps. Every value stays
+  //  within a few thousand pixels.
+  // ------------------------------------------------------------
+  var renderOrigin = { x: 0, y: 0, z: -1 };
+
   var stats = {
     tiles: 0,
     pending: 0,
@@ -282,8 +309,19 @@
 
   function tileUrl(layerKey, z, x, y) {
     var cfg = LAYERS[layerKey];
+
+    // Clamp to the layer's native max. When the user zooms past it we keep
+    // requesting the deepest level the source actually has and let the
+    // renderer upscale it - a blurry tile beats a blank one.
+    var nativeZ = Math.min(z, cfg.max || 18);
+    var div = Math.pow(2, z - nativeZ);
+    if (div > 1) {
+      x = Math.floor(x / div);
+      y = Math.floor(y / div);
+    }
+
     var url = cfg.url
-      .replace(/\{z\}/g, z)
+      .replace(/\{z\}/g, nativeZ)
       .replace(/\{x\}/g, x)
       .replace(/\{y\}/g, y);
     if (cfg.subdomains) {
@@ -341,20 +379,27 @@
       maybeHideLoader();
     };
 
-    // position in activeZ space
-    var s = tileScale(z);
-    var px = x * TILE * s;
-    var py = y * TILE * s;
-    var sz = TILE * s;
-    img.style.left = px + 'px';
-    img.style.top = py + 'px';
-    img.style.width = sz + 'px';
-    img.style.height = sz + 'px';
+    // position in activeZ space, relative to renderOrigin (keeps it small)
+    placeTile(rec);
 
     img.src = url;
 
     tilesBox.appendChild(img);
     stats.tiles++;
+  }
+
+  // Put a tile at its position relative to renderOrigin.
+  // Everything here stays within a few thousand pixels no matter how deep
+  // the zoom is, which is what keeps GPU transforms accurate.
+  function placeTile(rec) {
+    var s = tileScale(rec.z);
+    var sz = TILE * s;
+    var px = rec.x * TILE * s - renderOrigin.x * s;
+    var py = rec.y * TILE * s - renderOrigin.y * s;
+    rec.img.style.left = px + 'px';
+    rec.img.style.top = py + 'px';
+    rec.img.style.width = sz + 'px';
+    rec.img.style.height = sz + 'px';
   }
 
   function removeTile(key) {
@@ -377,17 +422,45 @@
     }
   }
 
-  // Reposition every existing tile after activeZ changes
+  // Reposition every existing tile after activeZ or renderOrigin changes
   function relayoutTiles() {
     for (var k in tileMap) {
       if (!tileMap.hasOwnProperty(k)) continue;
-      var rec = tileMap[k];
-      var s = tileScale(rec.z);
-      rec.img.style.left = (rec.x * TILE * s) + 'px';
-      rec.img.style.top = (rec.y * TILE * s) + 'px';
-      rec.img.style.width = (TILE * s) + 'px';
-      rec.img.style.height = (TILE * s) + 'px';
+      placeTile(tileMap[k]);
     }
+  }
+
+  // ============================================================
+  //  Render origin maintenance
+  // ============================================================
+  function viewLeftTop(z) {
+    var ratio = Math.pow(2, z - state.zoom);
+    var cx = state.center.x * ratio;
+    var cy = state.center.y * ratio;
+    return {
+      left: cx - viewport.clientWidth / 2,
+      top: cy - viewport.clientHeight / 2
+    };
+  }
+
+  // Keep renderOrigin within one tile of the viewport corner, in whole-tile
+  // steps so tiles do not jitter. Returns true when it moved (caller must
+  // relayout).
+  function ensureOrigin(z) {
+    var lt = viewLeftTop(z);
+    var ox = Math.floor(lt.left / TILE) * TILE - TILE;
+    var oy = Math.floor(lt.top / TILE) * TILE - TILE;
+
+    if (renderOrigin.z === z &&
+        Math.abs(renderOrigin.x - ox) < TILE &&
+        Math.abs(renderOrigin.y - oy) < TILE) {
+      return false;
+    }
+
+    renderOrigin.x = ox;
+    renderOrigin.y = oy;
+    renderOrigin.z = z;
+    return true;
   }
 
   // ============================================================
@@ -430,6 +503,15 @@
 
   function fillTiles() {
     var z = activeZ;
+
+    // Keep renderOrigin close to the viewport before placing anything.
+    // If it moved, every existing tile needs a new offset AND the old
+    // range check is meaningless, so force a refill.
+    if (ensureOrigin(z)) {
+      lastRect = null;
+      relayoutTiles();
+    }
+
     var r = viewRect(z);
 
     if (!needsFill(r)) return;
@@ -446,41 +528,89 @@
       }
     }
 
-    // Drop tiles of the active level that fell out of range,
-    // plus any level that is neither active nor the backdrop.
+    // Tiles of the active level that scrolled out of view are NOT removed
+    // immediately. During a fast pan the old tiles are the only thing on
+    // screen until the new ones arrive, so deleting them right away is
+    // what produced the blank flashes. Instead they are parked in a
+    // "recently used" set and swept later (see scheduleTileSweep).
     var keys = Object.keys(tileMap);
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
       var rec = tileMap[k];
       if (!rec) continue;
       if (rec.z === z) {
-        if (!need[k]) removeTile(k);
+        if (need[k]) {
+          delete spareTiles[k];
+        } else {
+          // keep it around, but remember that it is no longer needed
+          spareTiles[k] = Date.now();
+        }
       } else if (!backdropZ[rec.z]) {
         removeTile(k);
       }
     }
+
+    scheduleTileSweep();
+  }
+
+  // Parked tiles are released only after the view has settled, so a
+  // fast pan always has something to draw underneath.
+  //
+  // Note the re-arm: a single pass can skip tiles that were parked less
+  // than GRACE ms ago, and without rescheduling those skipped tiles would
+  // never be released (a fast drag left 300+ tiles in the DOM).
+  var SWEEP_GRACE = 1200;
+
+  function scheduleTileSweep() {
+    if (tileSweepTimer) clearTimeout(tileSweepTimer);
+    tileSweepTimer = setTimeout(runTileSweep, 900);
+  }
+
+  function runTileSweep() {
+    tileSweepTimer = null;
+
+    // Active level still loading? Keep everything and try again later.
+    if (activeReadyRatio() < 0.9) {
+      scheduleTileSweep();
+      return;
+    }
+
+    var now = Date.now();
+    var remaining = 0;
+
+    for (var k in spareTiles) {
+      if (!spareTiles.hasOwnProperty(k)) continue;
+      if (now - spareTiles[k] < SWEEP_GRACE) {
+        remaining++;
+        continue;
+      }
+      removeTile(k);
+      delete spareTiles[k];
+    }
+
+    // Some tiles were still inside the grace window; come back for them.
+    if (remaining > 0) scheduleTileSweep();
   }
 
   // ============================================================
   //  Transform the whole tile container (single GPU op)
+  //
+  //  Tiles inside the container are placed at (world - renderOrigin).
+  //  So the container only has to make up the difference between
+  //  renderOrigin and the viewport corner:
+  //     screen = (world - renderOrigin) * s + (renderOrigin - left) * s
+  //            = (world - left) * s
+  //  and (renderOrigin - left) is at most a couple of tiles, so the
+  //  translate stays small and keeps full float32 precision.
   // ============================================================
   function applyTransform() {
     var z = activeZ;
     var s = Math.pow(2, state.zoom - z);
-    var ratio = Math.pow(2, z - state.zoom);
-    var cx = state.center.x * ratio;
-    var cy = state.center.y * ratio;
 
-    var vw = viewport.clientWidth;
-    var vh = viewport.clientHeight;
-    var left = cx - vw / 2;
-    var top = cy - vh / 2;
+    var lt = viewLeftTop(z);
 
-    var ox = vw / 2;
-    var oy = vh / 2;
-
-    var px = ox * (1 - s) - left * s;
-    var py = oy * (1 - s) - top * s;
+    var px = (renderOrigin.x - lt.left) * s;
+    var py = (renderOrigin.y - lt.top) * s;
 
     tilesBox.style.transform =
       'translate3d(' + px.toFixed(2) + 'px,' + py.toFixed(2) + 'px,0) scale(' + s.toFixed(4) + ')';
@@ -502,6 +632,7 @@
 
     activeZ = z;
     lastRect = null;   // force a refill for the new level
+    renderOrigin.z = -1;   // origin is level-specific, rebuild it
 
     relayoutTiles();
     scheduleBackdropSweep();
@@ -570,10 +701,8 @@
   //  Render scheduling
   // ============================================================
   var rafPending = false;
-  var fillRequested = true;
 
   function requestRender(forceFill) {
-    if (forceFill) fillRequested = true;
     if (rafPending) return;
     rafPending = true;
 
@@ -583,16 +712,13 @@
       var z = Math.round(state.zoom);
       z = Math.max(MIN_Z, Math.min(MAX_Z, z));
 
-      if (z !== activeZ) {
-        switchLevel(z);
-        fillRequested = true;
-      }
+      if (z !== activeZ) switchLevel(z);
 
-      if (fillRequested) {
-        fillRequested = false;
-        fillTiles();
-      }
-
+      // Always call fillTiles. It is cheap when nothing changed (needsFill
+      // bails out after a few comparisons) and, crucially, this is the only
+      // path that adds tiles while panning. Gating it behind a "fill
+      // requested" flag meant dragging never loaded anything new.
+      fillTiles();
       applyTransform();
     });
   }
@@ -632,6 +758,7 @@
     backdropZ = {};
     activeZ = Math.round(state.zoom);
     lastRect = null;
+    renderOrigin.z = -1;
 
     updateLabels();
     requestRender(true);
@@ -806,6 +933,25 @@
   document.getElementById('btnReset').addEventListener('click', function () {
     setView(HOME.lat, HOME.lng, HOME.zoom);
     toast('View reset');
+  });
+
+  // Jump straight to the user's own neighbourhood at street level.
+  document.getElementById('btnLocate').addEventListener('click', function () {
+    if (!navigator.geolocation) {
+      toast('Geolocation not supported');
+      return;
+    }
+    toast('Locating...');
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        setView(pos.coords.latitude, pos.coords.longitude, 17);
+        toast('Located - zoom in for more detail');
+      },
+      function () {
+        toast('Location denied or unavailable');
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
+    );
   });
 
   // ============================================================
