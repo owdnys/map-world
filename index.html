@@ -102,32 +102,25 @@
   .chip b { color: #2563eb; font-weight: 600; }
 
   /* ============ Crosshair ============ */
-  /* Pinned to the viewport centre. It never moves with the map, so it
-     always marks state.center / the "Center" readout. Dark strokes with a
-     white halo stay visible on both pale streets and dark satellite. */
+  /* Two plain lines crossing at the viewport centre - no gaps, no dot.
+     Pinned to the screen, so it always marks state.center / "Center".
+     A white halo keeps it readable on both pale streets and dark satellite. */
   #crosshair {
     position: fixed;
     left: 50%; top: 50%;
-    width: 28px; height: 28px;
-    margin: -14px 0 0 -14px;
+    width: 56px; height: 56px;
+    margin: -28px 0 0 -28px;
     pointer-events: none;
     z-index: 95;
   }
   #crosshair i {
     position: absolute;
     display: block;
-    background: #0f172a;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.95);
+    background: rgba(15,23,42,.85);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.9);
   }
-  #crosshair .ch-t { left: 50%; top: 0;    width: 2px; height: 9px; margin-left: -1px; }
-  #crosshair .ch-b { left: 50%; bottom: 0; width: 2px; height: 9px; margin-left: -1px; }
-  #crosshair .ch-l { top: 50%; left: 0;    width: 9px; height: 2px; margin-top: -1px; }
-  #crosshair .ch-r { top: 50%; right: 0;   width: 9px; height: 2px; margin-top: -1px; }
-  #crosshair .ch-dot {
-    left: 50%; top: 50%;
-    width: 4px; height: 4px; margin: -2px 0 0 -2px;
-    border-radius: 50%;
-  }
+  #crosshair .ch-h { left: 0;  top: 50%;    width: 100%; height: 1px; margin-top: -.5px; }
+  #crosshair .ch-v { top: 0;   left: 50%;   height: 100%; width: 1px;  margin-left: -.5px; }
 
   /* ============ Credit ============ */
   #credit {
@@ -234,7 +227,7 @@
 </div>
 
 <div id="crosshair">
-  <i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i><i class="ch-dot"></i>
+  <i class="ch-h"></i><i class="ch-v"></i>
 </div>
 
 <div id="topbar">
