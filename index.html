@@ -130,9 +130,72 @@
   }
   #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
+  /* ============ Cursor readout ============ */
+  #foot .chip.cursor { min-width: 190px; }
+  #foot .chip.cursor b { color: #16a34a; }
+
+  /* ============ Bookmarks ============ */
+  #bookmarks {
+    position: fixed; left: 12px; top: 76px; z-index: 100;
+    width: 230px; max-height: 48vh;
+    display: none; flex-direction: column;
+    border-radius: 11px; overflow: hidden;
+    background: rgba(255,255,255,.96);
+    box-shadow: 0 4px 20px rgba(0,0,0,.16);
+    backdrop-filter: blur(10px);
+  }
+  #bookmarks.show { display: flex; }
+
+  #bookmarks .bm-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 10px 6px;
+    font-size: 10.5px; color: #94a3b8;
+    letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
+    border-bottom: 1px solid #eef2f7;
+  }
+  #bookmarks .bm-head span { color: #cbd5e1; font-weight: 500; letter-spacing: 0; text-transform: none; }
+
+  #bookmarks .bm-list { overflow-y: auto; padding: 4px; }
+
+  .bm-item {
+    display: flex; align-items: center; gap: 6px;
+    padding: 7px 8px; border-radius: 7px;
+    cursor: pointer; transition: background .12s;
+  }
+  .bm-item:hover { background: #eff6ff; }
+
+  .bm-item .bm-idx {
+    flex: 0 0 18px; height: 18px; line-height: 18px;
+    text-align: center; border-radius: 50%;
+    background: #3b82f6; color: #fff;
+    font-size: 10px; font-weight: 600;
+  }
+  .bm-item .bm-body { flex: 1; min-width: 0; }
+  .bm-item .bm-name {
+    font-size: 12.5px; color: #1e293b;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bm-item .bm-coord {
+    font-size: 10.5px; color: #94a3b8;
+    font-family: Consolas, monospace; margin-top: 1px;
+  }
+  .bm-item .bm-del {
+    flex: 0 0 auto; padding: 2px 5px; border: none;
+    background: transparent; color: #cbd5e1;
+    font-size: 14px; line-height: 1; cursor: pointer; border-radius: 4px;
+  }
+  .bm-item .bm-del:hover { background: #fee2e2; color: #dc2626; }
+
+  #bookmarks .bm-empty {
+    padding: 14px 10px; text-align: center;
+    font-size: 11.5px; color: #94a3b8; line-height: 1.6;
+  }
+
   @media (max-width: 640px) {
     #layers { top: auto; bottom: 56px; }
     .chip { font-size: 11px; padding: 6px 9px; }
+    #bookmarks { top: 64px; width: 190px; max-height: 38vh; }
+    #foot .chip.cursor { min-width: 0; }
   }
 </style>
 </head>
@@ -149,6 +212,7 @@
   <div class="sep"></div>
   <button class="btn" id="btnReset" title="Reset view">Reset</button>
   <button class="btn" id="btnLocate" title="Find my location">Locate</button>
+  <button class="btn" id="btnSave" title="Save cursor position (Ctrl+D)">&#9734; Save</button>
 </div>
 
 <div id="layers">
@@ -160,9 +224,14 @@
   <button data-layer="osm">OSM Street</button>
 </div>
 
+<div id="bookmarks">
+  <div class="bm-head">Saved <span id="bm-count">0</span></div>
+  <div class="bm-list" id="bm-list"></div>
+</div>
+
 <div id="foot">
-  <div class="chip">Lat <b id="c-lat">&mdash;</b></div>
-  <div class="chip">Lon <b id="c-lng">&mdash;</b></div>
+  <div class="chip cursor" id="chip-cursor">Cursor&nbsp; <b id="m-lat">&mdash;</b>, <b id="m-lng">&mdash;</b></div>
+  <div class="chip">Center <b id="c-lat">&mdash;</b>, <b id="c-lng">&mdash;</b></div>
 </div>
 
 <div id="credit">&copy; OpenStreetMap &middot; Amap &middot; Esri</div>
@@ -778,6 +847,28 @@
     document.getElementById('c-lat').textContent = lat.toFixed(5);
     document.getElementById('c-lng').textContent = lng.toFixed(5);
     zoomLabel.textContent = 'Zoom ' + state.zoom.toFixed(1);
+    // keep the cursor/centre readout in sync after any view change
+    if (typeof renderCursor === 'function') renderCursor();
+  }
+
+  // ============================================================
+  //  Screen -> lon/lat
+  //
+  //  A screen point maps back to the world through the same transform
+  //  chain used for rendering:
+  //     screen = (world - lt.left) * s
+  //  so world = screen / s + lt.left
+  // ============================================================
+  function screenToLatLng(px, py) {
+    var z = activeZ;
+    var s = Math.pow(2, state.zoom - z);
+    var lt = viewLeftTop(z);
+    var wx = px / s + lt.left;
+    var wy = py / s + lt.top;
+    return {
+      lat: worldYToLat(wy, z),
+      lng: worldXToLng(wx, z)
+    };
   }
 
   function zoomBy(delta, anchorX, anchorY) {
@@ -961,6 +1052,127 @@
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
   });
+
+  // ============================================================
+  //  Cursor readout + bookmarks
+  //
+  //  Bookmarks are kept in a plain array on purpose. There is no
+  //  localStorage / IndexedDB anywhere in this page, so a refresh or a
+  //  reopened tab starts with an empty list - exactly as requested.
+  // ============================================================
+  var M_LAT = document.getElementById('m-lat');
+  var M_LNG = document.getElementById('m-lng');
+  var bmBox = document.getElementById('bookmarks');
+  var bmList = document.getElementById('bm-list');
+  var bmCount = document.getElementById('bm-count');
+
+  var bookmarks = [];          // [{ lat, lng, zoom }]
+  var cursorLL = null;         // last lon/lat under the pointer
+
+  function renderCursor() {
+    if (cursorLL) {
+      M_LAT.textContent = cursorLL.lat.toFixed(5);
+      M_LNG.textContent = cursorLL.lng.toFixed(5);
+    } else {
+      // pointer outside the map: fall back to the view centre
+      M_LAT.textContent = worldYToLat(state.center.y, state.zoom).toFixed(5);
+      M_LNG.textContent = worldXToLng(state.center.x, state.zoom).toFixed(5);
+    }
+  }
+
+  viewport.addEventListener('mousemove', function (e) {
+    var r = viewport.getBoundingClientRect();
+    cursorLL = screenToLatLng(e.clientX - r.left, e.clientY - r.top);
+    renderCursor();
+  });
+
+  viewport.addEventListener('mouseleave', function () {
+    cursorLL = null;
+    renderCursor();
+  });
+
+  // ---- bookmarks ----
+  function renderBookmarks() {
+    bmCount.textContent = bookmarks.length;
+
+    if (bookmarks.length === 0) {
+      bmBox.classList.remove('show');
+      bmList.innerHTML = '';
+      return;
+    }
+
+    bmBox.classList.add('show');
+    var html = '';
+    for (var i = 0; i < bookmarks.length; i++) {
+      var b = bookmarks[i];
+      html +=
+        '<div class="bm-item" data-i="' + i + '">' +
+          '<div class="bm-idx">' + (i + 1) + '</div>' +
+          '<div class="bm-body">' +
+            '<div class="bm-name">' + b.lat.toFixed(4) + ', ' + b.lng.toFixed(4) + '</div>' +
+            '<div class="bm-coord">z' + b.zoom.toFixed(1) + '</div>' +
+          '</div>' +
+          '<button class="bm-del" data-del="' + i + '" title="Remove">&times;</button>' +
+        '</div>';
+    }
+    bmList.innerHTML = html;
+
+    bmList.querySelectorAll('.bm-item').forEach(function (el) {
+      el.addEventListener('click', function (e) {
+        if (e.target.classList.contains('bm-del')) return;   // delete handled below
+        var b = bookmarks[parseInt(this.getAttribute('data-i'), 10)];
+        if (!b) return;
+        setView(b.lat, b.lng, b.zoom);
+        toast('Jumped to saved point');
+      });
+    });
+
+    bmList.querySelectorAll('.bm-del').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        var i = parseInt(this.getAttribute('data-del'), 10);
+        bookmarks.splice(i, 1);
+        renderBookmarks();
+        toast('Removed');
+      });
+    });
+  }
+
+  function saveCurrentPoint() {
+    // Prefer the point under the pointer; fall back to the view centre.
+    var lat, lng;
+    if (cursorLL) {
+      lat = cursorLL.lat;
+      lng = cursorLL.lng;
+    } else {
+      lat = worldYToLat(state.center.y, state.zoom);
+      lng = worldXToLng(state.center.x, state.zoom);
+    }
+
+    // ignore an accidental duplicate of the previous save
+    var last = bookmarks[bookmarks.length - 1];
+    if (last && Math.abs(last.lat - lat) < 1e-6 && Math.abs(last.lng - lng) < 1e-6) {
+      toast('Already saved');
+      return;
+    }
+
+    bookmarks.push({ lat: lat, lng: lng, zoom: state.zoom });
+    renderBookmarks();
+    toast('Saved #' + bookmarks.length);
+  }
+
+  document.getElementById('btnSave').addEventListener('click', saveCurrentPoint);
+
+  // Ctrl+D / Cmd+D saves the point under the cursor
+  window.addEventListener('keydown', function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault();
+      saveCurrentPoint();
+    }
+  });
+
+  renderCursor();
+  renderBookmarks();
 
   // ============================================================
   //  Layer switching
