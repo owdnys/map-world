@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>World Map - Static</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden;
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    background: #e8eef3; }
+
+  /* ============ Map viewport ============ */
+  #viewport {
+    position: absolute; inset: 0; overflow: hidden;
+    cursor: grab; touch-action: none;
+    background: #cfe0ea;
+  }
+  #viewport.dragging { cursor: grabbing; }
+
+  /* Single GPU-composited container. All tiles live here.
+     The container is transformed as a whole - never per-tile. */
+  #tiles {
+    position: absolute; left: 0; top: 0;
+    width: 0; height: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+    backface-visibility: hidden;
+  }
+  #tiles img {
+    position: absolute;
+    left: 0; top: 0;
+    -webkit-user-drag: none; user-select: none;
+    pointer-events: none;
+    /* fade in when a tile arrives */
+    opacity: 0;
+    transition: opacity .18s linear;
+  }
+  #tiles img.ready { opacity: 1; }
+
+  /* ============ Top bar ============ */
+  #topbar {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    z-index: 100; display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 12px;
+    background: rgba(255,255,255,.96);
+    box-shadow: 0 4px 20px rgba(0,0,0,.16);
+    backdrop-filter: blur(10px);
+  }
+
+  .btn {
+    padding: 8px 13px; border: 1px solid #d8dee6; border-radius: 8px;
+    background: #fff; color: #333; font-size: 13px; cursor: pointer;
+    white-space: nowrap; transition: all .15s;
+    font-family: inherit;
+  }
+  .btn:hover { background: #f4f7fb; border-color: #b8c4d4; }
+  .btn:active { transform: translateY(1px); }
+  .btn.icon { padding: 8px 11px; font-size: 15px; line-height: 1; }
+
+  #zoomLabel {
+    min-width: 74px; text-align: center; font-size: 12.5px;
+    color: #475569; font-family: Consolas, monospace;
+  }
+
+  .sep { width: 1px; height: 22px; background: #e2e8f0; margin: 0 2px; }
+
+  /* ============ Layer switcher ============ */
+  #layers {
+    position: fixed; right: 12px; top: 76px; z-index: 100;
+    display: flex; flex-direction: column; gap: 5px;
+    padding: 8px; border-radius: 11px;
+    background: rgba(255,255,255,.96);
+    box-shadow: 0 4px 20px rgba(0,0,0,.16);
+    backdrop-filter: blur(10px);
+  }
+  #layers .title {
+    font-size: 10.5px; color: #94a3b8; padding: 1px 5px 4px;
+    letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
+  }
+  #layers button {
+    padding: 7px 13px; border: none; border-radius: 7px;
+    background: transparent; color: #475569; font-size: 12.5px;
+    cursor: pointer; text-align: left; white-space: nowrap;
+    transition: all .12s; font-family: inherit;
+  }
+  #layers button:hover { background: #f1f5f9; color: #1e293b; }
+  #layers button.on { background: #3b82f6; color: #fff; font-weight: 500; }
+
+  /* ============ Bottom info ============ */
+  #foot {
+    position: fixed; left: 12px; bottom: 12px; z-index: 100;
+    display: flex; gap: 10px; align-items: center;
+  }
+  .chip {
+    padding: 7px 13px; border-radius: 8px;
+    background: rgba(255,255,255,.94); color: #475569;
+    font-size: 12px; font-family: Consolas, monospace;
+    box-shadow: 0 2px 10px rgba(0,0,0,.12);
+    backdrop-filter: blur(8px);
+  }
+  .chip b { color: #2563eb; font-weight: 600; }
+
+  /* ============ Credit ============ */
+  #credit {
+    position: fixed; right: 12px; bottom: 12px; z-index: 100;
+    padding: 5px 10px; border-radius: 6px;
+    background: rgba(255,255,255,.88); color: #64748b;
+    font-size: 10.5px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.1);
+  }
+
+  /* ============ Loader ============ */
+  #loader {
+    position: fixed; inset: 0; z-index: 500;
+    display: flex; align-items: center; justify-content: center;
+    background: #e8eef3; color: #64748b; font-size: 14px;
+    transition: opacity .4s;
+  }
+  #loader.hide { opacity: 0; pointer-events: none; }
+
+  /* ============ Toast ============ */
+  #toast {
+    position: fixed; left: 50%; bottom: 60px;
+    transform: translateX(-50%) translateY(10px);
+    z-index: 200; padding: 9px 18px; border-radius: 8px;
+    background: rgba(30,41,59,.92); color: #fff; font-size: 12.5px;
+    opacity: 0; transition: all .25s; pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  @media (max-width: 640px) {
+    #layers { top: auto; bottom: 56px; }
+    .chip { font-size: 11px; padding: 6px 9px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+  <div id="tiles"></div>
+</div>
+
+<div id="topbar">
+  <button class="btn icon" id="zoomOut" title="Zoom out">&minus;</button>
+  <div id="zoomLabel">Zoom 4</div>
+  <button class="btn icon" id="zoomIn" title="Zoom in">+</button>
+  <div class="sep"></div>
+  <button class="btn" id="btnReset" title="Reset view">Reset</button>
+</div>
+
+<div id="layers">
+  <div class="title">Layers</div>
+  <button data-layer="osm" class="on">Street</button>
+  <button data-layer="amap">Amap</button>
+  <button data-layer="esri">Esri Street</button>
+  <button data-layer="amapSat">Amap Satellite</button>
+  <button data-layer="esriSat">Esri Satellite</button>
+</div>
+
+<div id="foot">
+  <div class="chip">Lat <b id="c-lat">&mdash;</b></div>
+  <div class="chip">Lon <b id="c-lng">&mdash;</b></div>
+</div>
+
+<div id="credit">&copy; OpenStreetMap &middot; Amap &middot; Esri</div>
+<div id="loader">Loading map...</div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ============================================================
+  //  Config
+  // ============================================================
+  var TILE = 256;
+  var MIN_Z = 2, MAX_Z = 18;
+
+  // How many extra tile rings to keep around the viewport.
+  // 1 ring means panning stays smooth without refetching.
+  var PAD = 1;
+
+  var LAYERS = {
+    osm: {
+      name: 'Street',
+      url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
+      max: 18,
+      credit: '&copy; OpenStreetMap contributors'
+    },
+    amap: {
+      name: 'Amap',
+      url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+      subdomains: ['1', '2', '3', '4'],
+      max: 18,
+      credit: '&copy; Amap'
+    },
+    esri: {
+      name: 'Esri Street',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      max: 18,
+      credit: 'Esri, HERE, Garmin, USGS'
+    },
+    amapSat: {
+      name: 'Amap Satellite',
+      url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
+      subdomains: ['1', '2', '3', '4'],
+      max: 18,
+      credit: '&copy; Amap'
+    },
+    esriSat: {
+      name: 'Esri Satellite',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      max: 18,
+      credit: 'Esri, Maxar, Earthstar'
+    }
+  };
+
+  // ============================================================
+  //  State
+  //  center is kept in world pixels at the CURRENT zoom level.
+  // ============================================================
+  var state = {
+    center: { x: 0, y: 0 },
+    zoom: 4,
+    layer: 'osm'
+  };
+
+  var HOME = { lat: 32, lng: 112, zoom: 4 };
+
+  var viewport = document.getElementById('viewport');
+  var tilesBox = document.getElementById('tiles');
+  var zoomLabel = document.getElementById('zoomLabel');
+  var toastEl = document.getElementById('toast');
+  var loader = document.getElementById('loader');
+
+  // ============================================================
+  //  Web Mercator projection
+  // ============================================================
+  function lngToWorldX(lng, z) {
+    return (lng + 180) / 360 * Math.pow(2, z) * TILE;
+  }
+  function latToWorldY(lat, z) {
+    var rad = lat * Math.PI / 180;
+    var y = Math.log(Math.tan(Math.PI / 4 + rad / 2));
+    return (1 - y / Math.PI) / 2 * Math.pow(2, z) * TILE;
+  }
+  function worldXToLng(x, z) {
+    return x / (Math.pow(2, z) * TILE) * 360 - 180;
+  }
+  function worldYToLat(y, z) {
+    var n = Math.PI - 2 * Math.PI * y / (Math.pow(2, z) * TILE);
+    return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  }
+
+  // ============================================================
+  //  Tile store
+  //
+  //  tileMap[key] = { img, z, x, y, ready }
+  //  key = "z/x/y"
+  //
+  //  Tiles are positioned in ACTIVE-Z space. A tile from level
+  //  (activeZ - 1) gets doubled in size, (activeZ + 1) halved.
+  //  That lets one transform on the container scale everything.
+  // ============================================================
+  var tileMap = {};
+  var activeZ = 4;       // the level currently being rendered
+  var prevZ = null;      // previous level, kept as a backdrop
+  var prevZTimer = null;
+
+  var stats = {
+    tiles: 0,
+    pending: 0,
+    lastFillKey: ''
+  };
+
+  function tileUrl(layerKey, z, x, y) {
+    var cfg = LAYERS[layerKey];
+    var url = cfg.url
+      .replace(/\{z\}/g, z)
+      .replace(/\{x\}/g, x)
+      .replace(/\{y\}/g, y);
+    if (cfg.subdomains) {
+      var s = cfg.subdomains[(x + y) % cfg.subdomains.length];
+      url = url.replace(/\{s\}/g, s);
+    }
+    return url;
+  }
+
+  // Scale factor for a tile of level z when rendered at activeZ
+  function tileScale(z) {
+    return Math.pow(2, activeZ - z);
+  }
+
+  function createTile(z, x, y) {
+    var key = z + '/' + x + '/' + y;
+    if (tileMap[key]) return;
+
+    var maxIdx = Math.pow(2, z) - 1;
+    var wx = ((x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
+
+    var img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    // Let the browser skip decoding work for tiles that are
+    // about to be replaced.
+    img.loading = 'eager';
+
+    var rec = { img: img, z: z, x: x, y: y, ready: false };
+    tileMap[key] = rec;
+    stats.pending++;
+
+    img.onload = function () {
+      rec.ready = true;
+      stats.pending--;
+      img.classList.add('ready');
+      maybeDropPrevLevel();
+      maybeHideLoader();
+    };
+    img.onerror = function () {
+      stats.pending--;
+      // keep the element out of sight; the level above will cover it
+      img.classList.remove('ready');
+      maybeHideLoader();
+    };
+
+    // position in activeZ space
+    var s = tileScale(z);
+    var px = x * TILE * s;
+    var py = y * TILE * s;
+    var sz = TILE * s;
+    img.style.left = px + 'px';
+    img.style.top = py + 'px';
+    img.style.width = sz + 'px';
+    img.style.height = sz + 'px';
+
+    img.src = tileUrl(state.layer, z, wx, y);
+
+    tilesBox.appendChild(img);
+    stats.tiles++;
+  }
+
+  function removeTile(key) {
+    var rec = tileMap[key];
+    if (!rec) return;
+    if (!rec.ready && stats.pending > 0) stats.pending--;
+    if (rec.img.parentNode) rec.img.parentNode.removeChild(rec.img);
+    rec.img.onload = null;
+    rec.img.onerror = null;
+    // release the bitmap
+    rec.img.src = '';
+    delete tileMap[key];
+    stats.tiles--;
+  }
+
+  function removeLevel(z) {
+    var keys = Object.keys(tileMap);
+    for (var i = 0; i < keys.length; i++) {
+      if (tileMap[keys[i]] && tileMap[keys[i]].z === z) removeTile(keys[i]);
+    }
+  }
+
+  // Reposition every existing tile after activeZ changes
+  function relayoutTiles() {
+    for (var k in tileMap) {
+      if (!tileMap.hasOwnProperty(k)) continue;
+      var rec = tileMap[k];
+      var s = tileScale(rec.z);
+      rec.img.style.left = (rec.x * TILE * s) + 'px';
+      rec.img.style.top = (rec.y * TILE * s) + 'px';
+      rec.img.style.width = (TILE * s) + 'px';
+      rec.img.style.height = (TILE * s) + 'px';
+    }
+  }
+
+  // ============================================================
+  //  Viewport math
+  // ============================================================
+  function viewRect(z) {
+    var vw = viewport.clientWidth;
+    var vh = viewport.clientHeight;
+    var ratio = Math.pow(2, z - state.zoom);
+    var cx = state.center.x * ratio;
+    var cy = state.center.y * ratio;
+    var left = cx - vw / 2;
+    var top = cy - vh / 2;
+
+    return {
+      z: z,
+      left: left,
+      top: top,
+      vw: vw,
+      vh: vh,
+      x0: Math.floor(left / TILE) - PAD,
+      y0: Math.floor(top / TILE) - PAD,
+      x1: Math.floor((left + vw - 1) / TILE) + PAD,
+      y1: Math.floor((top + vh - 1) / TILE) + PAD
+    };
+  }
+
+  // ============================================================
+  //  Fill the active level
+  // ============================================================
+  var lastRect = null;
+
+  function needsFill(r) {
+    if (!lastRect) return true;
+    if (lastRect.z !== r.z) return true;
+    if (r.x0 < lastRect.x0 || r.x1 > lastRect.x1) return true;
+    if (r.y0 < lastRect.y0 || r.y1 > lastRect.y1) return true;
+    return false;
+  }
+
+  function fillTiles() {
+    var z = activeZ;
+    var r = viewRect(z);
+
+    if (!needsFill(r)) return;
+    lastRect = r;
+
+    var maxIdx = Math.pow(2, z) - 1;
+    var need = {};
+
+    for (var tx = r.x0; tx <= r.x1; tx++) {
+      for (var ty = r.y0; ty <= r.y1; ty++) {
+        if (ty < 0 || ty > maxIdx) continue;
+        need[z + '/' + tx + '/' + ty] = true;
+        createTile(z, tx, ty);
+      }
+    }
+
+    // Drop tiles of the active level that fell out of range,
+    // plus any level that is neither active nor the backdrop.
+    var keys = Object.keys(tileMap);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var rec = tileMap[k];
+      if (!rec) continue;
+      if (rec.z === z) {
+        if (!need[k]) removeTile(k);
+      } else if (rec.z !== prevZ) {
+        removeTile(k);
+      }
+    }
+  }
+
+  // ============================================================
+  //  Transform the whole tile container (single GPU op)
+  // ============================================================
+  function applyTransform() {
+    var z = activeZ;
+    var s = Math.pow(2, state.zoom - z);
+    var ratio = Math.pow(2, z - state.zoom);
+    var cx = state.center.x * ratio;
+    var cy = state.center.y * ratio;
+
+    var vw = viewport.clientWidth;
+    var vh = viewport.clientHeight;
+    var left = cx - vw / 2;
+    var top = cy - vh / 2;
+
+    var ox = vw / 2;
+    var oy = vh / 2;
+
+    var px = ox * (1 - s) - left * s;
+    var py = oy * (1 - s) - top * s;
+
+    tilesBox.style.transform =
+      'translate3d(' + px.toFixed(2) + 'px,' + py.toFixed(2) + 'px,0) scale(' + s.toFixed(4) + ')';
+  }
+
+  // ============================================================
+  //  Level switching
+  //
+  //  Key performance idea: when zoom crosses an integer level we
+  //  build the NEW level and keep the OLD one underneath as a
+  //  backdrop. Nothing is torn down until the new level has
+  //  loaded, so there is no white flash and no visible rebuild.
+  // ============================================================
+  function switchLevel(z) {
+    if (z === activeZ) return;
+
+    prevZ = activeZ;
+    activeZ = z;
+    lastRect = null;   // force a refill for the new level
+
+    relayoutTiles();
+
+    if (prevZTimer) clearTimeout(prevZTimer);
+    prevZTimer = setTimeout(function () {
+      if (prevZ !== null && prevZ !== activeZ) {
+        removeLevel(prevZ);
+        prevZ = null;
+      }
+    }, 1200);
+  }
+
+  function maybeDropPrevLevel() {
+    if (prevZ === null || prevZ === activeZ) return;
+
+    // count how much of the active level is ready
+    var total = 0, ready = 0;
+    for (var k in tileMap) {
+      if (!tileMap.hasOwnProperty(k)) continue;
+      if (tileMap[k].z !== activeZ) continue;
+      total++;
+      if (tileMap[k].ready) ready++;
+    }
+    if (total > 0 && ready / total >= 0.85) {
+      if (prevZTimer) clearTimeout(prevZTimer);
+      removeLevel(prevZ);
+      prevZ = null;
+    }
+  }
+
+  // ============================================================
+  //  Render scheduling
+  // ============================================================
+  var rafPending = false;
+  var fillRequested = true;
+
+  function requestRender(forceFill) {
+    if (forceFill) fillRequested = true;
+    if (rafPending) return;
+    rafPending = true;
+
+    requestAnimationFrame(function () {
+      rafPending = false;
+
+      var z = Math.round(state.zoom);
+      z = Math.max(MIN_Z, Math.min(MAX_Z, z));
+
+      if (z !== activeZ) {
+        switchLevel(z);
+        fillRequested = true;
+      }
+
+      if (fillRequested) {
+        fillRequested = false;
+        fillTiles();
+      }
+
+      applyTransform();
+    });
+  }
+
+  // ============================================================
+  //  Loader / toast
+  // ============================================================
+  var loaderHidden = false;
+  function maybeHideLoader() {
+    if (loaderHidden) return;
+    if (stats.tiles === 0) return;
+    loaderHidden = true;
+    loader.classList.add('hide');
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toastEl.classList.remove('show');
+    }, 1600);
+  }
+
+  // ============================================================
+  //  View helpers
+  // ============================================================
+  function setView(lat, lng, zoom) {
+    state.zoom = Math.max(MIN_Z, Math.min(MAX_Z, zoom));
+    state.center.x = lngToWorldX(lng, state.zoom);
+    state.center.y = latToWorldY(lat, state.zoom);
+
+    // rebuild the tile level from scratch
+    var keys = Object.keys(tileMap);
+    for (var i = 0; i < keys.length; i++) removeTile(keys[i]);
+    prevZ = null;
+    activeZ = Math.round(state.zoom);
+    lastRect = null;
+
+    updateLabels();
+    requestRender(true);
+  }
+
+  function updateLabels() {
+    var lat = worldYToLat(state.center.y, state.zoom);
+    var lng = worldXToLng(state.center.x, state.zoom);
+    document.getElementById('c-lat').textContent = lat.toFixed(5);
+    document.getElementById('c-lng').textContent = lng.toFixed(5);
+    zoomLabel.textContent = 'Zoom ' + state.zoom.toFixed(1);
+  }
+
+  function zoomBy(delta, anchorX, anchorY) {
+    var oldZoom = state.zoom;
+    var newZoom = Math.max(MIN_Z, Math.min(MAX_Z, oldZoom + delta));
+    if (newZoom === oldZoom) return;
+
+    var vw = viewport.clientWidth;
+    var vh = viewport.clientHeight;
+
+    if (anchorX === undefined) anchorX = vw / 2;
+    if (anchorY === undefined) anchorY = vh / 2;
+
+    // world point under the anchor, in OLD zoom space
+    var wx = state.center.x + (anchorX - vw / 2);
+    var wy = state.center.y + (anchorY - vh / 2);
+
+    var ratio = Math.pow(2, newZoom - oldZoom);
+    wx *= ratio;
+    wy *= ratio;
+
+    state.center.x = wx - (anchorX - vw / 2);
+    state.center.y = wy - (anchorY - vh / 2);
+    state.zoom = newZoom;
+
+    updateLabels();
+    requestRender();
+  }
+
+  // ============================================================
+  //  Drag
+  // ============================================================
+  var dragging = false;
+  var dragStart = null;
+
+  viewport.addEventListener('mousedown', function (e) {
+    if (e.button !== 0) return;
+    dragging = true;
+    dragStart = {
+      x: e.clientX, y: e.clientY,
+      cx: state.center.x, cy: state.center.y
+    };
+    viewport.classList.add('dragging');
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    var dx = e.clientX - dragStart.x;
+    var dy = e.clientY - dragStart.y;
+    state.center.x = dragStart.cx - dx;
+    state.center.y = dragStart.cy - dy;
+    updateLabels();
+    requestRender();
+  });
+
+  window.addEventListener('mouseup', function () {
+    if (!dragging) return;
+    dragging = false;
+    viewport.classList.remove('dragging');
+  });
+
+  // ============================================================
+  //  Touch
+  // ============================================================
+  var touchState = null;
+
+  viewport.addEventListener('touchstart', function (e) {
+    if (e.touches.length === 1) {
+      var t = e.touches[0];
+      touchState = {
+        mode: 'pan',
+        x: t.clientX, y: t.clientY,
+        cx: state.center.x, cy: state.center.y
+      };
+    } else if (e.touches.length === 2) {
+      var t1 = e.touches[0], t2 = e.touches[1];
+      touchState = {
+        mode: 'pinch',
+        dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+        zoom: state.zoom,
+        midX: (t1.clientX + t2.clientX) / 2,
+        midY: (t1.clientY + t2.clientY) / 2
+      };
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  viewport.addEventListener('touchmove', function (e) {
+    if (!touchState) return;
+    if (touchState.mode === 'pan' && e.touches.length === 1) {
+      var t = e.touches[0];
+      state.center.x = touchState.cx - (t.clientX - touchState.x);
+      state.center.y = touchState.cy - (t.clientY - touchState.y);
+      updateLabels();
+      requestRender();
+    } else if (touchState.mode === 'pinch' && e.touches.length === 2) {
+      var t1 = e.touches[0], t2 = e.touches[1];
+      var d = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      var ratio = d / touchState.dist;
+      var targetZoom = touchState.zoom + Math.log2(ratio);
+      targetZoom = Math.max(MIN_Z, Math.min(MAX_Z, targetZoom));
+      var dz = targetZoom - state.zoom;
+      if (Math.abs(dz) > 0.02) zoomBy(dz, touchState.midX, touchState.midY);
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  viewport.addEventListener('touchend', function (e) {
+    if (e.touches.length === 0) {
+      touchState = null;
+    } else if (e.touches.length === 1) {
+      var t = e.touches[0];
+      touchState = {
+        mode: 'pan',
+        x: t.clientX, y: t.clientY,
+        cx: state.center.x, cy: state.center.y
+      };
+    }
+  });
+
+  // ---- wheel zoom ----
+  // Accumulate wheel deltas and apply them on the next frame.
+  // This keeps a fast scroll wheel from firing dozens of renders.
+  var wheelAccum = 0;
+  var wheelAnchor = { x: 0, y: 0 };
+  var wheelRaf = false;
+
+  viewport.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    wheelAnchor.x = e.clientX;
+    wheelAnchor.y = e.clientY;
+
+    var step = e.deltaMode === 1 ? 0.25 : 0.15;
+    wheelAccum += (e.deltaY > 0 ? -step : step);
+
+    if (wheelRaf) return;
+    wheelRaf = true;
+    requestAnimationFrame(function () {
+      wheelRaf = false;
+      var d = wheelAccum;
+      wheelAccum = 0;
+      if (Math.abs(d) < 0.01) return;
+      // clamp a single frame's jump
+      if (d > 1) d = 1;
+      if (d < -1) d = -1;
+      zoomBy(d, wheelAnchor.x, wheelAnchor.y);
+    });
+  }, { passive: false });
+
+  // ---- double click zoom ----
+  viewport.addEventListener('dblclick', function (e) {
+    zoomBy(1, e.clientX, e.clientY);
+  });
+
+  // ============================================================
+  //  Buttons
+  // ============================================================
+  document.getElementById('zoomIn').addEventListener('click', function () { zoomBy(1); });
+  document.getElementById('zoomOut').addEventListener('click', function () { zoomBy(-1); });
+  document.getElementById('btnReset').addEventListener('click', function () {
+    setView(HOME.lat, HOME.lng, HOME.zoom);
+    toast('View reset');
+  });
+
+  // ============================================================
+  //  Layer switching
+  // ============================================================
+  document.querySelectorAll('#layers button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var key = this.getAttribute('data-layer');
+      if (!LAYERS[key]) return;
+      if (key === state.layer) return;
+
+      state.layer = key;
+
+      // swap sources on existing tiles instead of rebuilding
+      var keys = Object.keys(tileMap);
+      for (var i = 0; i < keys.length; i++) {
+        var rec = tileMap[keys[i]];
+        if (!rec) continue;
+        var maxIdx = Math.pow(2, rec.z) - 1;
+        var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
+        rec.ready = false;
+        rec.img.classList.remove('ready');
+        rec.img.src = tileUrl(key, rec.z, wx, rec.y);
+      }
+
+      document.querySelectorAll('#layers button').forEach(function (x) {
+        x.classList.toggle('on', x === b);
+      });
+      document.getElementById('credit').innerHTML = LAYERS[key].credit;
+      toast('Layer: ' + LAYERS[key].name);
+    });
+  });
+
+  // ============================================================
+  //  Resize
+  // ============================================================
+  var resizeTimer = null;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      lastRect = null;
+      requestRender(true);
+    }, 150);
+  });
+
+  // ============================================================
+  //  Keyboard
+  // ============================================================
+  window.addEventListener('keydown', function (e) {
+    var step = 120;
+    if (e.key === '+' || e.key === '=') { zoomBy(0.5); e.preventDefault(); }
+    else if (e.key === '-' || e.key === '_') { zoomBy(-0.5); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft')  { state.center.x -= step; requestRender(); updateLabels(); e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { state.center.x += step; requestRender(); updateLabels(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp')    { state.center.y -= step; requestRender(); updateLabels(); e.preventDefault(); }
+    else if (e.key === 'ArrowDown')  { state.center.y += step; requestRender(); updateLabels(); e.preventDefault(); }
+  });
+
+  // ============================================================
+  //  Start
+  // ============================================================
+  setView(HOME.lat, HOME.lng, HOME.zoom);
+
+  setTimeout(function () {
+    if (!loaderHidden) maybeHideLoader();
+  }, 2500);
+
+  // expose a tiny debug handle
+  window.__map = {
+    state: state,
+    stats: function () {
+      return {
+        tiles: stats.tiles,
+        pending: stats.pending,
+        activeZ: activeZ,
+        prevZ: prevZ,
+        zoom: state.zoom
+      };
+    }
+  };
+
+})();
+</script>
+</body>
+</html>
