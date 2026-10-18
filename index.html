@@ -101,6 +101,34 @@
   }
   .chip b { color: #2563eb; font-weight: 600; }
 
+  /* ============ Crosshair ============ */
+  /* Pinned to the viewport centre. It never moves with the map, so it
+     always marks state.center / the "Center" readout. Dark strokes with a
+     white halo stay visible on both pale streets and dark satellite. */
+  #crosshair {
+    position: fixed;
+    left: 50%; top: 50%;
+    width: 28px; height: 28px;
+    margin: -14px 0 0 -14px;
+    pointer-events: none;
+    z-index: 95;
+  }
+  #crosshair i {
+    position: absolute;
+    display: block;
+    background: #0f172a;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.95);
+  }
+  #crosshair .ch-t { left: 50%; top: 0;    width: 2px; height: 9px; margin-left: -1px; }
+  #crosshair .ch-b { left: 50%; bottom: 0; width: 2px; height: 9px; margin-left: -1px; }
+  #crosshair .ch-l { top: 50%; left: 0;    width: 9px; height: 2px; margin-top: -1px; }
+  #crosshair .ch-r { top: 50%; right: 0;   width: 9px; height: 2px; margin-top: -1px; }
+  #crosshair .ch-dot {
+    left: 50%; top: 50%;
+    width: 4px; height: 4px; margin: -2px 0 0 -2px;
+    border-radius: 50%;
+  }
+
   /* ============ Credit ============ */
   #credit {
     position: fixed; right: 12px; bottom: 12px; z-index: 100;
@@ -203,6 +231,10 @@
 
 <div id="viewport">
   <div id="tiles"></div>
+</div>
+
+<div id="crosshair">
+  <i class="ch-t"></i><i class="ch-b"></i><i class="ch-l"></i><i class="ch-r"></i><i class="ch-dot"></i>
 </div>
 
 <div id="topbar">
@@ -1213,6 +1245,9 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
       lastRect = null;
+      // viewport size feeds viewLeftTop(), so the readouts and the
+      // crosshair's world position must be recomputed too
+      updateLabels();
       requestRender(true);
     }, 150);
   });
