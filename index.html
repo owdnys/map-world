@@ -192,11 +192,11 @@
     },
     amap: {
       name: 'Amap',
-      // wprd is the detailed Amap endpoint - roughly 2.6x the tile payload
-      // of webrd and it actually carries house numbers, building outlines
-      // and POIs at z18. That is what "zoom in far enough to see my
-      // neighbourhood" needs.
-      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=8',
+      // wprd is the detailed Amap endpoint. style=7 is the FULL street map
+      // (land fill, buildings, parks, roads, labels). style=8 is only the
+      // transparent road+label overlay and is meant to be stacked on top of
+      // a base layer - using it alone gives roads floating on white.
+      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
       subdomains: ['1', '2', '3', '4'],
       // z18 has real detail; z19 comes back as a ~190-byte blank placeholder
       max: 18,
@@ -389,13 +389,21 @@
   }
 
   // Put a tile at its position relative to renderOrigin.
-  // Everything here stays within a few thousand pixels no matter how deep
-  // the zoom is, which is what keeps GPU transforms accurate.
+  //
+  //  mult = 2^(activeZ - rec.z): how much this tile is enlarged to fit the
+  //         active level (backdrop tiles are 2x, 4x ...)
+  //
+  //  left = activeZ position (rec.x * TILE * mult) - renderOrigin
+  //
+  //  renderOrigin must NOT be multiplied by mult - it already lives in
+  //  activeZ space. Multiplying it too pushed every backdrop tile to roughly
+  //  double its correct offset, which dragged the old layer left while
+  //  zooming.
   function placeTile(rec) {
-    var s = tileScale(rec.z);
-    var sz = TILE * s;
-    var px = rec.x * TILE * s - renderOrigin.x * s;
-    var py = rec.y * TILE * s - renderOrigin.y * s;
+    var mult = tileScale(rec.z);
+    var sz = TILE * mult;
+    var px = rec.x * TILE * mult - renderOrigin.x;
+    var py = rec.y * TILE * mult - renderOrigin.y;
     rec.img.style.left = px + 'px';
     rec.img.style.top = py + 'px';
     rec.img.style.width = sz + 'px';
