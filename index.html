@@ -1031,27 +1031,22 @@
     return { lat: lat, lng: lng };
   }
 
-  function zoomBy(delta, anchorX, anchorY) {
+  // Zoom always happens around the crosshair at the viewport centre.
+  // Anchoring on the mouse pointer meant the point under the cursor stayed
+  // put while everything else slid away, which is disorienting when the
+  // crosshair is what marks your position. With a centre anchor the ground
+  // under the crosshair is invariant, so the map grows/shrinks in place.
+  function zoomBy(delta) {
     var oldZoom = state.zoom;
     var newZoom = Math.max(MIN_Z, Math.min(MAX_Z, oldZoom + delta));
     if (newZoom === oldZoom) return;
 
-    var vw = viewport.clientWidth;
-    var vh = viewport.clientHeight;
-
-    if (anchorX === undefined) anchorX = vw / 2;
-    if (anchorY === undefined) anchorY = vh / 2;
-
-    // world point under the anchor, in OLD zoom space
-    var wx = state.center.x + (anchorX - vw / 2);
-    var wy = state.center.y + (anchorY - vh / 2);
-
+    // state.center is stored in world pixels AT the current zoom level, so
+    // the stored value has to be rescaled together with the level. Without
+    // this the centre would jump to a completely different place.
     var ratio = Math.pow(2, newZoom - oldZoom);
-    wx *= ratio;
-    wy *= ratio;
-
-    state.center.x = wx - (anchorX - vw / 2);
-    state.center.y = wy - (anchorY - vh / 2);
+    state.center.x *= ratio;
+    state.center.y *= ratio;
     state.zoom = newZoom;
 
     updateLabels();
@@ -1132,7 +1127,7 @@
       var targetZoom = touchState.zoom + Math.log2(ratio);
       targetZoom = Math.max(MIN_Z, Math.min(MAX_Z, targetZoom));
       var dz = targetZoom - state.zoom;
-      if (Math.abs(dz) > 0.02) zoomBy(dz, touchState.midX, touchState.midY);
+      if (Math.abs(dz) > 0.02) zoomBy(dz);   // pivots on the crosshair
     }
     e.preventDefault();
   }, { passive: false });
@@ -1153,14 +1148,12 @@
   // ---- wheel zoom ----
   // Accumulate wheel deltas and apply them on the next frame.
   // This keeps a fast scroll wheel from firing dozens of renders.
+  // The zoom pivots on the centre crosshair, not the pointer.
   var wheelAccum = 0;
-  var wheelAnchor = { x: 0, y: 0 };
   var wheelRaf = false;
 
   viewport.addEventListener('wheel', function (e) {
     e.preventDefault();
-    wheelAnchor.x = e.clientX;
-    wheelAnchor.y = e.clientY;
 
     var step = e.deltaMode === 1 ? 0.25 : 0.15;
     wheelAccum += (e.deltaY > 0 ? -step : step);
@@ -1175,13 +1168,13 @@
       // clamp a single frame's jump
       if (d > 1) d = 1;
       if (d < -1) d = -1;
-      zoomBy(d, wheelAnchor.x, wheelAnchor.y);
+      zoomBy(d);
     });
   }, { passive: false });
 
   // ---- double click zoom ----
   viewport.addEventListener('dblclick', function (e) {
-    zoomBy(1, e.clientX, e.clientY);
+    zoomBy(1);
   });
 
   // ============================================================
