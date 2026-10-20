@@ -261,10 +261,10 @@
 
 <div id="layers">
   <div class="title">Layers</div>
-  <button data-layer="esriSat" class="on">Esri Satellite</button>
+  <button data-layer="amapSat" class="on">Amap Satellite</button>
+  <button data-layer="esriSat">Esri Satellite</button>
   <button data-layer="esri">Esri Street</button>
   <button data-layer="amap">Amap</button>
-  <button data-layer="amapSat">Amap Satellite</button>
   <button data-layer="osm">OSM Street</button>
 </div>
 
@@ -343,9 +343,12 @@
   var state = {
     center: { x: 0, y: 0 },
     zoom: 4,
-    // Esri Satellite is the default: it is WGS-84 native (no datum shift),
-    // has real global coverage, and actually shows buildings at z18.
-    layer: 'esriSat'
+    // Amap Satellite is the default: for mainland China its imagery is
+    // noticeably fresher than Esri's. Esri's Xiamen block is dated
+    // 2025-01-19, while Amap already shows buildings finished later that
+    // year. Esri stays available for overseas points, where Amap has no
+    // coverage at all.
+    layer: 'amapSat'
   };
 
   var HOME = { lat: 32, lng: 112, zoom: 4 };
@@ -1379,7 +1382,9 @@
     // ~180-byte blank, so jumping there showed an empty page. Esri's global
     // imagery has real coverage, so switch before the first tile request.
     var inAmapCoverage = (v.lat >= 18 && v.lat <= 54 && v.lng >= 73 && v.lng <= 136);
-    if (!inAmapCoverage && state.layer === 'amap') {
+    var onAmapLayer = (state.layer === 'amap' || state.layer === 'amapSat');
+
+    if (!inAmapCoverage && onAmapLayer) {
       state.layer = 'esriSat';
       updateLayerUI('esriSat');
       toast('Overseas point - switched to Esri Satellite');
@@ -1387,6 +1392,7 @@
       toast(fmtLat(v.lat) + '   ' + fmtLng(v.lng));
     }
 
+    // setView() rebuilds the grid from scratch, so it picks up the new datum.
     setView(v.lat, v.lng, 16);
   }
 
