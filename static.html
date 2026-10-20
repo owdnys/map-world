@@ -261,10 +261,10 @@
 
 <div id="layers">
   <div class="title">Layers</div>
-  <button data-layer="amap" class="on">Amap</button>
-  <button data-layer="amapSat">Amap Satellite</button>
+  <button data-layer="esriSat" class="on">Esri Satellite</button>
   <button data-layer="esri">Esri Street</button>
-  <button data-layer="esriSat">Esri Satellite</button>
+  <button data-layer="amap">Amap</button>
+  <button data-layer="amapSat">Amap Satellite</button>
   <button data-layer="osm">OSM Street</button>
 </div>
 
@@ -343,8 +343,9 @@
   var state = {
     center: { x: 0, y: 0 },
     zoom: 4,
-    // amap is the fastest source by a wide margin (40ms vs 1169ms for OSM)
-    layer: 'amap'
+    // Esri Satellite is the default: it is WGS-84 native (no datum shift),
+    // has real global coverage, and actually shows buildings at z18.
+    layer: 'esriSat'
   };
 
   var HOME = { lat: 32, lng: 112, zoom: 4 };
@@ -372,6 +373,80 @@
   function worldYToLat(y, z) {
     var n = Math.PI - 2 * Math.PI * y / (Math.pow(2, z) * TILE);
     return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  }
+
+  // ============================================================
+  //  Datum shift: WGS-84  <->  GCJ-02
+  //
+  //  Amap tiles are cut in GCJ-02 (the "Mars coordinate" datum used by
+  //  every Chinese mapping service). Everywhere else - Esri, OSM, GPS -
+  //  is WGS-84. Inside China the two differ by roughly 100-600 m, so
+  //  feeding WGS-84 numbers straight into an Amap layer puts you on the
+  //  wrong street.
+  //
+  //  Everything inside this file is stored in WGS-84. Only the Amap
+  //  layers are converted, and only at the point where world pixels are
+  //  computed, so readouts, bookmarks and the jump box all stay WGS-84.
+  // ============================================================
+  var GCJ_A = 6378245.0;
+  var GCJ_EE = 0.00669342162296594323;
+
+  function outOfChina(lat, lng) {
+    return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55);
+  }
+
+  function gcjDLat(x, y) {
+    var r = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    r += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0;
+    r += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320.0 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0;
+    return r;
+  }
+
+  function gcjDLng(x, y) {
+    var r = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+    r += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0;
+    r += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0;
+    r += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0;
+    return r;
+  }
+
+  function wgs84ToGcj02(lat, lng) {
+    if (outOfChina(lat, lng)) return { lat: lat, lng: lng };
+
+    var dLat = gcjDLat(lng - 105.0, lat - 35.0);
+    var dLng = gcjDLng(lng - 105.0, lat - 35.0);
+
+    var radLat = lat / 180.0 * Math.PI;
+    var magic = Math.sin(radLat);
+    magic = 1 - GCJ_EE * magic * magic;
+    var sqrtMagic = Math.sqrt(magic);
+
+    dLat = (dLat * 180.0) / ((GCJ_A * (1 - GCJ_EE)) / (magic * sqrtMagic) * Math.PI);
+    dLng = (dLng * 180.0) / (GCJ_A / sqrtMagic * Math.cos(radLat) * Math.PI);
+
+    return { lat: lat + dLat, lng: lng + dLng };
+  }
+
+  // Inverse has no closed form; three refinement passes is plenty
+  // (residual well under a metre).
+  function gcj02ToWgs84(lat, lng) {
+    if (outOfChina(lat, lng)) return { lat: lat, lng: lng };
+
+    var wLat = lat, wLng = lng;
+    for (var i = 0; i < 3; i++) {
+      var g = wgs84ToGcj02(wLat, wLng);
+      wLat += lat - g.lat;
+      wLng += lng - g.lng;
+    }
+    return { lat: wLat, lng: wLng };
+  }
+
+  // Which layers are cut in GCJ-02
+  var GCJ_LAYERS = { amap: 1, amapSat: 1 };
+
+  function usesGcj() {
+    return !!GCJ_LAYERS[state.layer];
   }
 
   // ============================================================
@@ -554,10 +629,27 @@
   // ============================================================
   //  Render origin maintenance
   // ============================================================
+
+  // state.center is WGS-84 world pixels. Amap layers must be drawn in
+  // GCJ-02, so shift the centre before computing any world pixel for them.
+  function centerInLayer() {
+    if (!usesGcj()) return state.center;
+
+    var lat = worldYToLat(state.center.y, state.zoom);
+    var lng = worldXToLng(state.center.x, state.zoom);
+    var g = wgs84ToGcj02(lat, lng);
+
+    return {
+      x: lngToWorldX(g.lng, state.zoom),
+      y: latToWorldY(g.lat, state.zoom)
+    };
+  }
+
   function viewLeftTop(z) {
     var ratio = Math.pow(2, z - state.zoom);
-    var cx = state.center.x * ratio;
-    var cy = state.center.y * ratio;
+    var c = centerInLayer();
+    var cx = c.x * ratio;
+    var cy = c.y * ratio;
     return {
       left: cx - viewport.clientWidth / 2,
       top: cy - viewport.clientHeight / 2
@@ -591,8 +683,9 @@
     var vw = viewport.clientWidth;
     var vh = viewport.clientHeight;
     var ratio = Math.pow(2, z - state.zoom);
-    var cx = state.center.x * ratio;
-    var cy = state.center.y * ratio;
+    var c = centerInLayer();
+    var cx = c.x * ratio;
+    var cy = c.y * ratio;
     var left = cx - vw / 2;
     var top = cy - vh / 2;
 
@@ -923,10 +1016,16 @@
     var lt = viewLeftTop(z);
     var wx = px / s + lt.left;
     var wy = py / s + lt.top;
-    return {
-      lat: worldYToLat(wy, z),
-      lng: worldXToLng(wx, z)
-    };
+
+    var lat = worldYToLat(wy, z);
+    var lng = worldXToLng(wx, z);
+
+    // Amap layers are drawn in GCJ-02; hand back WGS-84 like everything else.
+    if (usesGcj()) {
+      var w = gcj02ToWgs84(lat, lng);
+      return { lat: w.lat, lng: w.lng };
+    }
+    return { lat: lat, lng: lng };
   }
 
   function zoomBy(delta, anchorX, anchorY) {
@@ -1333,21 +1432,34 @@
   function switchLayer(key, quiet) {
     if (!LAYERS[key] || key === state.layer) return false;
 
+    var datumChanged = (!!GCJ_LAYERS[key] !== !!GCJ_LAYERS[state.layer]);
     state.layer = key;
 
-    // swap sources on existing tiles instead of rebuilding
-    var keys = Object.keys(tileMap);
-    for (var i = 0; i < keys.length; i++) {
-      var rec = tileMap[keys[i]];
-      if (!rec) continue;
-      var maxIdx = Math.pow(2, rec.z) - 1;
-      var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
-      rec.ready = false;
-      rec.img.classList.remove('ready');
-      rec.img.src = tileUrl(key, rec.z, wx, rec.y);
+    if (datumChanged) {
+      // The tile x/y indices were computed in the old datum. Reusing them
+      // would just re-fetch the same tiles, which is exactly what made the
+      // Amap layer look unshifted. Throw the grid away and rebuild it.
+      var keys = Object.keys(tileMap);
+      for (var i = 0; i < keys.length; i++) removeTile(keys[i]);
+      backdropZ = {};
+      lastRect = null;
+      renderOrigin.z = -1;
+    } else {
+      // Same datum: just swap the image sources, no rebuild needed.
+      var keys2 = Object.keys(tileMap);
+      for (var j = 0; j < keys2.length; j++) {
+        var rec = tileMap[keys2[j]];
+        if (!rec) continue;
+        var maxIdx = Math.pow(2, rec.z) - 1;
+        var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
+        rec.ready = false;
+        rec.img.classList.remove('ready');
+        rec.img.src = tileUrl(key, rec.z, wx, rec.y);
+      }
     }
 
     updateLayerUI(key);
+    requestRender(true);
     if (!quiet) toast('Layer: ' + LAYERS[key].name);
     return true;
   }
