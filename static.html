@@ -598,6 +598,88 @@
     return Math.pow(2, activeZ - z);
   }
 
+  // ------------------------------------------------------------
+  //  Tile load queue
+  //
+  //  Previously every visible tile was requested at once. A browser only
+  //  opens ~6 connections per host, so a screenful of 40+ tiles queued up
+  //  behind each other, and one slow host stalled everything. Requests
+  //  are now issued through a small queue: centre-first, with a cap on
+  //  how many are in flight. Tiles still waiting are simply blank; they
+  //  fill in as slots free up.
+  // ------------------------------------------------------------
+  var MAX_INFLIGHT = 8;
+  var TILE_TIMEOUT = 12000;   // give up on a tile after this long
+  var inflight = 0;
+  var pendingQueue = [];   // [{rec, url}]
+
+  function queueTile(rec, url) {
+    rec.url = url;
+    pendingQueue.push(rec);
+  }
+
+  // Distance from the viewport centre, used to load the middle first.
+  function queuePriority(rec) {
+    var vw = viewport.clientWidth, vh = viewport.clientHeight;
+    var s = tileScale(rec.z);
+    var lt = viewLeftTop(activeZ);
+    var sx = (rec.x * TILE * s - lt.left * s) / s;
+    var sy = (rec.y * TILE * s - lt.top * s) / s;
+    var dx = sx + TILE / 2 - vw / 2;
+    var dy = sy + TILE / 2 - vh / 2;
+    return dx * dx + dy * dy;
+  }
+
+  function pumpQueue() {
+    if (inflight >= MAX_INFLIGHT || pendingQueue.length === 0) return;
+
+    // Re-sort so the tiles closest to the crosshair go first.
+    if (pendingQueue.length > 1) {
+      for (var i = 0; i < pendingQueue.length; i++) {
+        pendingQueue[i]._p = queuePriority(pendingQueue[i]);
+      }
+      pendingQueue.sort(function (a, b) { return a._p - b._p; });
+    }
+
+    while (inflight < MAX_INFLIGHT && pendingQueue.length) {
+      var rec = pendingQueue.shift();
+
+      // dropped while waiting (level changed, panned away, layer switched)
+      if (!tileMap[rec.key] || tileMap[rec.key] !== rec) continue;
+      if (rec.ready || rec.loading) continue;
+
+      rec.loading = true;
+      inflight++;
+      rec.img.src = rec.url;
+
+      // Watchdog: a stalled request would otherwise hold its slot forever
+      // and the whole queue would crawl. Force it through the error path.
+      (function (r) {
+        if (r._wd) clearTimeout(r._wd);
+        r._wd = setTimeout(function () {
+          if (!r.ready && r.loading && tileMap[r.key] === r) {
+            r.loading = false;
+            if (inflight > 0) inflight--;
+            if (r.tries < 1) {
+              r.tries++;
+              r.url = r.url + (r.url.indexOf('?') < 0 ? '?' : '&') + '_t=1';
+              queueTile(r, r.url);
+            } else {
+              if (r.counted) { stats.pending--; r.counted = false; }
+            }
+            r.img.src = '';
+            pumpQueue();
+          }
+        }, TILE_TIMEOUT);
+      })(rec);
+    }
+  }
+
+  function releaseSlot() {
+    if (inflight > 0) inflight--;
+    pumpQueue();
+  }
+
   function createTile(z, x, y) {
     var key = z + '/' + x + '/' + y;
     if (tileMap[key]) return;
@@ -608,13 +690,18 @@
     var img = document.createElement('img');
     img.alt = '';
     img.decoding = 'async';
-    img.loading = 'eager';
+    // 'lazy' keeps the browser from racing us; the queue decides order.
+    img.loading = 'lazy';
     // NOTE: do NOT set crossOrigin here. Tile servers such as Amap do not
     // send CORS headers, and requesting the image with crossOrigin makes
     // the load fail outright - which shows up as a blank map after zooming.
     // crossOrigin is only needed when reading pixels back through canvas.
 
-    var rec = { img: img, z: z, x: x, y: y, ready: false, tries: 0 };
+    var rec = {
+      img: img, z: z, x: x, y: y, key: key,
+      ready: false, loading: false, tries: 0, url: '',
+      counted: true          // still counted in stats.pending
+    };
     tileMap[key] = rec;
     stats.pending++;
 
@@ -622,29 +709,41 @@
 
     img.onload = function () {
       rec.ready = true;
-      stats.pending--;
+      rec.loading = false;
+      if (rec._wd) { clearTimeout(rec._wd); rec._wd = null; }
+      if (rec.counted) { stats.pending--; rec.counted = false; }
       img.classList.add('ready');
+      releaseSlot();
       maybeDropPrevLevel();
       maybeHideLoader();
     };
     img.onerror = function () {
+      rec.loading = false;
+      if (rec._wd) { clearTimeout(rec._wd); rec._wd = null; }
       // one quiet retry - transient timeouts are common on flaky links
       if (rec.tries < 1) {
         rec.tries++;
+        var retryUrl = url + (url.indexOf('?') < 0 ? '?' : '&') + '_r=' + rec.tries;
         setTimeout(function () {
-          if (tileMap[key] === rec) img.src = url + (url.indexOf('?') < 0 ? '?' : '&') + '_r=' + rec.tries;
-        }, 400 + Math.random() * 600);
+          if (tileMap[key] === rec) {
+            rec.url = retryUrl;
+            queueTile(rec, retryUrl);
+            pumpQueue();
+          }
+        }, 500 + Math.random() * 800);
+        releaseSlot();
         return;
       }
-      stats.pending--;
+      if (rec.counted) { stats.pending--; rec.counted = false; }
       img.classList.remove('ready');
+      releaseSlot();
       maybeHideLoader();
     };
 
     // position in activeZ space, relative to renderOrigin (keeps it small)
     placeTile(rec);
 
-    img.src = url;
+    queueTile(rec, url);
 
     tilesBox.appendChild(img);
     stats.tiles++;
@@ -675,7 +774,19 @@
   function removeTile(key) {
     var rec = tileMap[key];
     if (!rec) return;
-    if (!rec.ready && stats.pending > 0) stats.pending--;
+
+    if (rec.counted) { stats.pending--; rec.counted = false; }
+
+    // If it was queued but not started, drop it from the queue.
+    // If it was already in flight, free the slot.
+    for (var i = pendingQueue.length - 1; i >= 0; i--) {
+      if (pendingQueue[i] === rec) pendingQueue.splice(i, 1);
+    }
+    if (rec.loading) {
+      rec.loading = false;
+      if (inflight > 0) inflight--;
+    }
+
     if (rec.img.parentNode) rec.img.parentNode.removeChild(rec.img);
     rec.img.onload = null;
     rec.img.onerror = null;
@@ -683,6 +794,7 @@
     rec.img.src = '';
     delete tileMap[key];
     stats.tiles--;
+    pumpQueue();
   }
 
   function removeLevel(z) {
@@ -839,6 +951,7 @@
     }
 
     scheduleTileSweep();
+    pumpQueue();
   }
 
   // Parked tiles are released only after the view has settled, so a
@@ -1657,6 +1770,8 @@
       renderOrigin.z = -1;
     } else {
       // Same datum: just swap the image sources, no rebuild needed.
+      // Go through the queue too, otherwise switching layers would fire
+      // dozens of requests at once and stall.
       var keys2 = Object.keys(tileMap);
       for (var j = 0; j < keys2.length; j++) {
         var rec = tileMap[keys2[j]];
@@ -1664,13 +1779,17 @@
         var maxIdx = Math.pow(2, rec.z) - 1;
         var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
         rec.ready = false;
+        rec.loading = false;
+        rec.tries = 0;
         rec.img.classList.remove('ready');
-        rec.img.src = tileUrl(key, rec.z, wx, rec.y);
+        rec.img.src = '';
+        queueTile(rec, tileUrl(key, rec.z, wx, rec.y));
       }
     }
 
     updateLayerUI(key);
     requestRender(true);
+    pumpQueue();
     if (!quiet) toast(layerName(key));
     return true;
   }
