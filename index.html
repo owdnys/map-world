@@ -95,13 +95,22 @@
     letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
   }
   #layers button {
-    padding: 7px 13px; border: none; border-radius: 7px;
+    padding: 6px 12px; border: none; border-radius: 7px;
     background: transparent; color: #475569; font-size: 12.5px;
     cursor: pointer; text-align: left; white-space: nowrap;
     transition: all .12s; font-family: inherit;
+    display: block; width: 100%;
   }
   #layers button:hover { background: #f1f5f9; color: #1e293b; }
-  #layers button.on { background: #3b82f6; color: #fff; font-weight: 500; }
+  #layers button.on { background: #3b82f6; color: #fff; }
+  #layers button.on .ld { color: rgba(255,255,255,.8); }
+  #layers button.on .ln { font-weight: 600; }
+
+  #layers .ln { display: block; line-height: 1.35; }
+  #layers .ld {
+    display: block; font-size: 10px; line-height: 1.4;
+    color: #94a3b8; margin-top: 1px; white-space: normal;
+  }
 
   /* Layer hint: which source covers which part of the world.
      There is no automatic switching any more - the user chooses. */
@@ -259,44 +268,37 @@
 </div>
 
 <div id="topbar">
-  <button class="btn icon" id="zoomOut" title="Zoom out">&minus;</button>
+  <button class="btn icon" id="zoomOut" data-i18n-title="zoomOut" title="Zoom out">&minus;</button>
   <div id="zoomLabel">Zoom 4</div>
-  <button class="btn icon" id="zoomIn" title="Zoom in">+</button>
+  <button class="btn icon" id="zoomIn" data-i18n-title="zoomIn" title="Zoom in">+</button>
   <div class="sep"></div>
-  <button class="btn" id="btnReset" title="Reset view">Reset</button>
-  <button class="btn" id="btnLocate" title="Find my location">Locate</button>
-  <button class="btn" id="btnSave" title="Save cursor position (Ctrl+D)">&#9734; Save</button>
+  <button class="btn" id="btnReset" data-i18n="reset" data-i18n-title="resetTip" title="Reset view">Reset</button>
+  <button class="btn" id="btnLocate" data-i18n="locate" data-i18n-title="locateTip" title="Find my location">Locate</button>
+  <button class="btn" id="btnSave" data-i18n="save" data-i18n-title="saveTip" title="Save cursor position (Ctrl+D)">&#9734; Save</button>
   <div class="sep"></div>
-  <input id="gotoInput" placeholder="lat, lon  e.g. 13.58,144.92" autocomplete="off"
-         spellcheck="false" title="Type coordinates and press Enter">
+  <input id="gotoInput" data-i18n-ph="gotoPh" placeholder="lat, lon  e.g. 13.58,144.92" autocomplete="off"
+         spellcheck="false" data-i18n-title="gotoTip" title="Type coordinates and press Enter">
+  <div class="sep"></div>
+  <button class="btn" id="btnLang" title="Switch language">中文</button>
 </div>
 
 <div id="layers">
-  <div class="title">Layers</div>
-  <button data-layer="amapSat" class="on">Amap Satellite</button>
-  <button data-layer="esriSat">Esri Satellite</button>
-  <button data-layer="esri">Esri Street</button>
-  <button data-layer="amap">Amap</button>
-  <button data-layer="osm">OSM Street</button>
-  <div class="hint">
-    <div class="row"><b>&#127464;&#127475; China</b> &rarr; Amap</div>
-    <div class="row"><b>&#127758; Overseas</b> &rarr; Esri</div>
-    <span>Switch manually</span>
-  </div>
+  <div class="title" data-i18n="layers">Layers</div>
+  <div id="layerList"></div>
 </div>
 
 <div id="bookmarks">
-  <div class="bm-head">Saved <span id="bm-count">0</span></div>
+  <div class="bm-head"><span id="bm-title">Bookmarks</span> <span id="bm-count">0</span></div>
   <div class="bm-list" id="bm-list"></div>
 </div>
 
 <div id="foot">
-  <div class="chip cursor" id="chip-cursor">Cursor&nbsp; <b id="m-lat">&mdash;</b>, <b id="m-lng">&mdash;</b></div>
-  <div class="chip">Center <b id="c-lat">&mdash;</b>, <b id="c-lng">&mdash;</b></div>
+  <div class="chip cursor" id="chip-cursor"><span data-i18n="cursor">Cursor</span>&nbsp; <b id="m-lat">&mdash;</b>, <b id="m-lng">&mdash;</b></div>
+  <div class="chip"><span data-i18n="center">Center</span> <b id="c-lat">&mdash;</b>, <b id="c-lng">&mdash;</b></div>
 </div>
 
 <div id="credit">&copy; OpenStreetMap &middot; Amap &middot; Esri</div>
-<div id="loader">Loading map...</div>
+<div id="loader" data-i18n="loading">Loading map...</div>
 <div id="toast"></div>
 
 <script>
@@ -313,43 +315,95 @@
   // 1 ring means panning stays smooth without refetching.
   var PAD = 1;
 
+  // Each layer carries a bilingual name plus a one-line note explaining
+  // what it is actually good for. Both are rendered in the layer panel.
   var LAYERS = {
-    osm: {
-      name: 'Street',
-      url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
-      max: 18,
-      credit: '&copy; OpenStreetMap contributors'
-    },
-    amap: {
-      name: 'Amap',
-      // wprd is the detailed Amap endpoint. style=7 is the FULL street map
-      // (land fill, buildings, parks, roads, labels). style=8 is only the
-      // transparent road+label overlay and is meant to be stacked on top of
-      // a base layer - using it alone gives roads floating on white.
-      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
-      subdomains: ['1', '2', '3', '4'],
-      // z18 has real detail; z19 comes back as a ~190-byte blank placeholder
-      max: 18,
-      credit: '&copy; Amap'
-    },
-    esri: {
-      name: 'Esri Street',
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-      max: 18,
-      credit: 'Esri, HERE, Garmin, USGS'
-    },
     amapSat: {
       name: 'Amap Satellite',
+      nameZh: '\u9ad8\u5fb7\u536b\u661f',
+      note: 'Freshest imagery inside China',
+      noteZh: '\u56fd\u5185\u5f71\u50cf\u6700\u65b0',
       url: 'https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}',
       subdomains: ['1', '2', '3', '4'],
       max: 18,
       credit: '&copy; Amap'
     },
+    amap: {
+      name: 'Amap Street',
+      nameZh: '\u9ad8\u5fb7\u8857\u9053',
+      note: 'Chinese street map, house numbers at z18',
+      noteZh: '\u4e2d\u6587\u8857\u9053\u56fe\uff0cz18 \u6709\u95e8\u724c\u53f7',
+      // wprd is the detailed endpoint. style=7 is the FULL street map
+      // (land fill, buildings, parks, roads, labels). style=8 is only the
+      // transparent road+label overlay meant to sit on a base layer.
+      url: 'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      subdomains: ['1', '2', '3', '4'],
+      // z19 comes back as a ~190-byte blank placeholder
+      max: 18,
+      credit: '&copy; Amap'
+    },
     esriSat: {
       name: 'Esri Satellite',
+      nameZh: 'Esri \u536b\u661f',
+      note: 'Global imagery - the one to use overseas',
+      noteZh: '\u5168\u7403\u5f71\u50cf\u2014\u2014\u5883\u5916\u7528\u8fd9\u4e2a',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
       max: 18,
       credit: 'Esri, Maxar, Earthstar'
+    },
+    esri: {
+      name: 'Esri Street',
+      nameZh: 'Esri \u8857\u9053',
+      note: 'English-labelled street map',
+      noteZh: '\u82f1\u6587\u8857\u9053\u56fe',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+      max: 18,
+      credit: 'Esri, HERE, Garmin, USGS'
+    },
+    gray: {
+      name: 'Light Grey',
+      nameZh: '\u6d45\u7070\u5e95\u56fe',
+      note: 'Neutral canvas for overlaying data',
+      noteZh: '\u4e2d\u6027\u5e95\u56fe\uff0c\u9002\u5408\u53e0\u52a0\u6570\u636e',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      max: 18,
+      credit: 'Esri, HERE, Garmin'
+    },
+    dark: {
+      name: 'Dark Grey',
+      nameZh: '\u6df1\u7070\u5e95\u56fe',
+      note: 'Dark canvas, easier on the eyes at night',
+      noteZh: '\u6df1\u8272\u5e95\u56fe\uff0c\u591c\u95f4\u4e0d\u523a\u773c',
+      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+      max: 18,
+      credit: 'Esri, HERE, Garmin'
+    },
+    osm: {
+      name: 'OSM Bilingual',
+      nameZh: 'OSM \u53cc\u8bed',
+      note: 'Chinese + English labels, clear town names',
+      noteZh: '\u4e2d\u82f1\u53cc\u8bed\u6807\u6ce8\uff0c\u4e61\u9547\u540d\u6e05\u695a',
+      url: 'https://tile.openstreetmap.de/{z}/{x}/{y}.png',
+      max: 18,
+      credit: '&copy; OpenStreetMap contributors'
+    },
+    hot: {
+      name: 'OSM Humanitarian',
+      nameZh: 'OSM \u4eba\u9053\u4e3b\u4e49',
+      note: 'High-contrast style, good for rural areas',
+      noteZh: '\u9ad8\u5bf9\u6bd4\u5ea6\uff0c\u770b\u4e61\u6751\u597d\u7528',
+      url: 'https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+      max: 18,
+      credit: '&copy; OpenStreetMap contributors, HOT'
+    },
+    cyclosm: {
+      name: 'CyclOSM',
+      nameZh: 'CyclOSM \u5730\u5f62',
+      note: 'Terrain and cycling detail',
+      noteZh: '\u5730\u5f62\u4e0e\u9a91\u884c\u7ec6\u8282',
+      url: 'https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+      max: 18,
+      credit: '&copy; OpenStreetMap contributors, CyclOSM'
     }
   };
 
@@ -1017,7 +1071,9 @@
     var lng = worldXToLng(state.center.x, state.zoom);
     document.getElementById('c-lat').textContent = fmtLat(lat);
     document.getElementById('c-lng').textContent = fmtLng(lng);
-    zoomLabel.textContent = 'Zoom ' + state.zoom.toFixed(1);
+    zoomLabel.textContent =
+      (typeof lang !== 'undefined' && lang === 'zh' ? '\u7f29\u653e ' : 'Zoom ') +
+      state.zoom.toFixed(1);
     // keep the cursor/centre readout in sync after any view change
     if (typeof renderCursor === 'function') renderCursor();
   }
@@ -1201,23 +1257,23 @@
   document.getElementById('zoomOut').addEventListener('click', function () { zoomBy(-1); });
   document.getElementById('btnReset').addEventListener('click', function () {
     setView(HOME.lat, HOME.lng, HOME.zoom);
-    toast('View reset');
+    toast(t('viewReset'));
   });
 
   // Jump straight to the user's own neighbourhood at street level.
   document.getElementById('btnLocate').addEventListener('click', function () {
     if (!navigator.geolocation) {
-      toast('Geolocation not supported');
+      toast(t('noGeo'));
       return;
     }
-    toast('Locating...');
+    toast(t('locating'));
     navigator.geolocation.getCurrentPosition(
       function (pos) {
         setView(pos.coords.latitude, pos.coords.longitude, 17);
-        toast('Located - zoom in for more detail');
+        toast(t('located'));
       },
       function () {
-        toast('Location denied or unavailable');
+        toast(t('locateFail'));
       },
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
@@ -1301,7 +1357,7 @@
         var b = bookmarks[parseInt(this.getAttribute('data-i'), 10)];
         if (!b) return;
         setView(b.lat, b.lng, b.zoom);
-        toast('Jumped to saved point');
+        toast(t('jumpSaved'));
       });
     });
 
@@ -1311,7 +1367,7 @@
         var i = parseInt(this.getAttribute('data-del'), 10);
         bookmarks.splice(i, 1);
         renderBookmarks();
-        toast('Removed');
+        toast(t('removed'));
       });
     });
   }
@@ -1330,13 +1386,13 @@
     // ignore an accidental duplicate of the previous save
     var last = bookmarks[bookmarks.length - 1];
     if (last && Math.abs(last.lat - lat) < 1e-6 && Math.abs(last.lng - lng) < 1e-6) {
-      toast('Already saved');
+      toast(t('alreadySaved'));
       return;
     }
 
     bookmarks.push({ lat: lat, lng: lng, zoom: state.zoom });
     renderBookmarks();
-    toast('Saved #' + bookmarks.length);
+    toast(t('saved') + ' #' + bookmarks.length);
   }
 
   document.getElementById('btnSave').addEventListener('click', saveCurrentPoint);
@@ -1383,7 +1439,7 @@
     var v = parseCoordPair(gotoInput.value);
     if (!v) {
       gotoInput.classList.add('bad');
-      toast('Format: 13.584, 144.924  or  13.584N, 144.924E');
+      toast(t('badCoord'));
       return;
     }
     gotoInput.classList.remove('bad');
@@ -1423,12 +1479,162 @@
   renderBookmarks();
 
   // ============================================================
+  //  Language
+  //
+  //  Two dictionaries, one switch. The Chinese side is written by hand
+  //  rather than translated word-for-word, so it reads like something a
+  //  Chinese speaker would actually put on a map UI.
+  // ============================================================
+  var I18N = {
+    en: {
+      layers: 'Layers',
+      reset: 'Reset',
+      resetTip: 'Back to the starting view',
+      locate: 'Locate',
+      locateTip: 'Jump to my location',
+      save: 'Save',
+      saveTip: 'Bookmark the point under the crosshair (Ctrl+D)',
+      gotoPh: 'lat, lon   e.g. 13.58,144.92',
+      gotoTip: 'Paste coordinates, press Enter',
+      zoomIn: 'Zoom in',
+      zoomOut: 'Zoom out',
+      cursor: 'Cursor',
+      center: 'Center',
+      loading: 'Loading map...',
+      saved: 'Saved',
+      savedTitle: 'Bookmarks',
+      emptyList: 'Nothing saved yet',
+      layerLabel: 'Layer',
+      needAmap: 'Inside China \u2192 Amap',
+      needEsri: 'Overseas \u2192 Esri',
+      switchManually: 'Switch manually',
+      removed: 'Removed',
+      alreadySaved: 'Already saved',
+      viewReset: 'View reset',
+      locating: 'Locating...',
+      located: 'Got it - zoom in for detail',
+      locateFail: 'Location unavailable',
+      badCoord: 'Format: 13.584, 144.924',
+      noGeo: 'Geolocation not supported',
+      jumpSaved: 'Jumped to saved point'
+    },
+    zh: {
+      layers: '\u56fe\u5c42',
+      reset: '\u56de\u5230\u8d77\u70b9',
+      resetTip: '\u8fd4\u56de\u521d\u59cb\u89c6\u89d2',
+      locate: '\u5b9a\u4f4d',
+      locateTip: '\u8df3\u5230\u6211\u7684\u4f4d\u7f6e',
+      save: '\u6536\u85cf',
+      saveTip: '\u628a\u51c6\u5fc3\u5904\u7684\u70b9\u5b58\u8d77\u6765\uff08Ctrl+D\uff09',
+      gotoPh: '\u7ecf\u7eac\u5ea6  \u5982 13.58,144.92',
+      gotoTip: '\u7c98\u8d34\u5750\u6807\u540e\u56de\u8f66',
+      zoomIn: '\u653e\u5927',
+      zoomOut: '\u7f29\u5c0f',
+      cursor: '\u9f20\u6807',
+      center: '\u5c4f\u5e55\u4e2d\u5fc3',
+      loading: '\u5730\u56fe\u52a0\u8f7d\u4e2d\u2026',
+      saved: '\u5df2\u5b58',
+      savedTitle: '\u6536\u85cf\u5939',
+      emptyList: '\u8fd8\u6ca1\u6709\u6536\u85cf',
+      layerLabel: '\u5f53\u524d\u56fe\u5c42',
+      needAmap: '\u56fd\u5185\u7528\u9ad8\u5fb7',
+      needEsri: '\u5883\u5916\u7528 Esri',
+      switchManually: '\u9700\u8981\u624b\u52a8\u5207\u6362',
+      removed: '\u5df2\u5220\u9664',
+      alreadySaved: '\u5df2\u7ecf\u5b58\u8fc7\u4e86',
+      viewReset: '\u5df2\u56de\u5230\u8d77\u70b9',
+      locating: '\u6b63\u5728\u5b9a\u4f4d\u2026',
+      located: '\u5230\u4e86\uff0c\u653e\u5927\u770b\u7ec6\u8282',
+      locateFail: '\u5b9a\u4f4d\u5931\u8d25',
+      badCoord: '\u683c\u5f0f\uff1a13.584, 144.924',
+      noGeo: '\u6d4f\u89c8\u5668\u4e0d\u652f\u6301\u5b9a\u4f4d',
+      jumpSaved: '\u5df2\u8df3\u5230\u6536\u85cf\u70b9'
+    }
+  };
+
+  var lang = 'en';
+
+  function t(key) {
+    return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
+  }
+
+  function applyLanguage() {
+    document.documentElement.lang = (lang === 'zh' ? 'zh-CN' : 'en');
+
+    document.querySelectorAll('[data-i18n]').forEach(function (el) {
+      el.textContent = t(el.getAttribute('data-i18n'));
+    });
+    document.querySelectorAll('[data-i18n-title]').forEach(function (el) {
+      el.title = t(el.getAttribute('data-i18n-title'));
+    });
+    document.querySelectorAll('[data-i18n-ph]').forEach(function (el) {
+      el.placeholder = t(el.getAttribute('data-i18n-ph'));
+    });
+
+    document.getElementById('btnLang').textContent = (lang === 'zh' ? 'English' : '\u4e2d\u6587');
+    document.getElementById('bm-title').textContent = t('savedTitle');
+    document.getElementById('zoomLabel').textContent =
+      (lang === 'zh' ? '\u7f29\u653e ' : 'Zoom ') + state.zoom.toFixed(1);
+
+    renderLayerList();
+    renderBookmarks();
+  }
+
+  document.getElementById('btnLang').addEventListener('click', function () {
+    lang = (lang === 'zh' ? 'en' : 'zh');
+    applyLanguage();
+    // refresh the zoom label / readouts in the new language
+    updateLabels();
+  });
+
+  // ============================================================
   //  Layer switching
   // ============================================================
-  // Programmatic layer switch (also used by the coordinate jump when the
-  // destination is outside Amap's coverage).
+  function layerName(key) {
+    var cfg = LAYERS[key];
+    if (!cfg) return key;
+    return (lang === 'zh' && cfg.nameZh) ? cfg.nameZh : cfg.name;
+  }
+  function layerNote(key) {
+    var cfg = LAYERS[key];
+    if (!cfg) return '';
+    return (lang === 'zh' && cfg.noteZh) ? cfg.noteZh : cfg.note;
+  }
+
+  // Build the layer panel from LAYERS so the bilingual names and the
+  // one-line notes stay in sync with the data.
+  function renderLayerList() {
+    var box = document.getElementById('layerList');
+    var html = '';
+
+    for (var key in LAYERS) {
+      if (!LAYERS.hasOwnProperty(key)) continue;
+      html +=
+        '<button data-layer="' + key + '"' +
+        (key === state.layer ? ' class="on"' : '') + '>' +
+          '<span class="ln">' + layerName(key) + '</span>' +
+          '<span class="ld">' + layerNote(key) + '</span>' +
+        '</button>';
+    }
+
+    html +=
+      '<div class="hint">' +
+        '<div class="row"><b>&#127464;&#127475; ' + t('needAmap') + '</b></div>' +
+        '<div class="row"><b>&#127758; ' + t('needEsri') + '</b></div>' +
+        '<span>' + t('switchManually') + '</span>' +
+      '</div>';
+
+    box.innerHTML = html;
+
+    box.querySelectorAll('button').forEach(function (b) {
+      b.addEventListener('click', function () {
+        switchLayer(this.getAttribute('data-layer'));
+      });
+    });
+  }
+
   function updateLayerUI(key) {
-    document.querySelectorAll('#layers button').forEach(function (x) {
+    document.querySelectorAll('#layerList button').forEach(function (x) {
       x.classList.toggle('on', x.getAttribute('data-layer') === key);
     });
     document.getElementById('credit').innerHTML = LAYERS[key].credit;
@@ -1465,15 +1671,9 @@
 
     updateLayerUI(key);
     requestRender(true);
-    if (!quiet) toast('Layer: ' + LAYERS[key].name);
+    if (!quiet) toast(layerName(key));
     return true;
   }
-
-  document.querySelectorAll('#layers button').forEach(function (b) {
-    b.addEventListener('click', function () {
-      switchLayer(this.getAttribute('data-layer'));
-    });
-  });
 
   // ============================================================
   //  Resize
@@ -1507,6 +1707,7 @@
   // ============================================================
   //  Start
   // ============================================================
+  applyLanguage();       // build the layer list + translate the chrome
   setView(HOME.lat, HOME.lng, HOME.zoom);
 
   setTimeout(function () {
