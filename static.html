@@ -112,6 +112,15 @@
     color: #94a3b8; margin-top: 1px; white-space: normal;
   }
 
+  /* Divider before the slower, overseas-hosted layers */
+  #layers .slowsep {
+    margin: 4px 6px 2px;
+    padding-top: 5px;
+    border-top: 1px solid #eef2f7;
+    font-size: 9.5px; letter-spacing: .3px;
+    color: #b6c0cc; text-transform: uppercase; font-weight: 600;
+  }
+
   /* Layer hint: which source covers which part of the world.
      There is no automatic switching any more - the user chooses. */
   #layers .hint {
@@ -351,20 +360,11 @@
       max: 18,
       credit: 'Esri, Maxar, Earthstar'
     },
-    esri: {
-      name: 'Esri Street',
-      nameZh: 'Esri \u8857\u9053',
-      note: 'English-labelled street map',
-      noteZh: '\u82f1\u6587\u8857\u9053\u56fe',
-      url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-      max: 18,
-      credit: 'Esri, HERE, Garmin, USGS'
-    },
     gray: {
       name: 'Light Grey',
       nameZh: '\u6d45\u7070\u5e95\u56fe',
-      note: 'Neutral canvas for overlaying data',
-      noteZh: '\u4e2d\u6027\u5e95\u56fe\uff0c\u9002\u5408\u53e0\u52a0\u6570\u636e',
+      note: 'Minimal canvas - sparse inside China',
+      noteZh: '\u6781\u7b80\u5e95\u56fe\uff08\u56fd\u5185\u8def\u7f51\u7a00\u758f\uff09',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
       max: 18,
       credit: 'Esri, HERE, Garmin'
@@ -372,8 +372,8 @@
     dark: {
       name: 'Dark Grey',
       nameZh: '\u6df1\u7070\u5e95\u56fe',
-      note: 'Dark canvas, easier on the eyes at night',
-      noteZh: '\u6df1\u8272\u5e95\u56fe\uff0c\u591c\u95f4\u4e0d\u523a\u773c',
+      note: 'Dark canvas - sparse inside China',
+      noteZh: '\u6df1\u8272\u5e95\u56fe\uff08\u56fd\u5185\u8def\u7f51\u7a00\u758f\uff09',
       url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
       max: 18,
       credit: 'Esri, HERE, Garmin'
@@ -390,19 +390,27 @@
     hot: {
       name: 'OSM Humanitarian',
       nameZh: 'OSM \u4eba\u9053\u4e3b\u4e49',
-      note: 'High-contrast style, good for rural areas',
-      noteZh: '\u9ad8\u5bf9\u6bd4\u5ea6\uff0c\u770b\u4e61\u6751\u597d\u7528',
-      url: 'https://a.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
-      max: 18,
+      note: 'High-contrast style - slow, hosted in Europe',
+      noteZh: '\u9ad8\u5bf9\u6bd4\u5ea6\u98ce\u683c\uff08\u6b27\u6d32\u670d\u52a1\u5668\uff0c\u8f83\u6162\uff09',
+      url: 'https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png',
+      subdomains: ['a', 'b', 'c', 'a', 'b', 'c'],
+      // Overseas host: 0.5-5s per tile. Push parallelism hard so a
+      // screenful lands in a few seconds instead of half a minute.
+      maxInflight: 16,
+      max: 17,
+      slow: true,
       credit: '&copy; OpenStreetMap contributors, HOT'
     },
     cyclosm: {
       name: 'CyclOSM',
       nameZh: 'CyclOSM \u5730\u5f62',
-      note: 'Terrain and cycling detail',
-      noteZh: '\u5730\u5f62\u4e0e\u9a91\u884c\u7ec6\u8282',
-      url: 'https://a.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
-      max: 18,
+      note: 'Terrain and cycling detail - slow, hosted in Europe',
+      noteZh: '\u5730\u5f62\u4e0e\u9a91\u884c\u7ec6\u8282\uff08\u6b27\u6d32\u670d\u52a1\u5668\uff0c\u8f83\u6162\uff09',
+      url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+      subdomains: ['a', 'b', 'c', 'a', 'b', 'c'],
+      maxInflight: 16,
+      max: 17,
+      slow: true,
       credit: '&copy; OpenStreetMap contributors, CyclOSM'
     }
   };
@@ -630,8 +638,16 @@
     return dx * dx + dy * dy;
   }
 
+  // How many parallel requests this layer wants. Overseas hosts are slow
+  // per request, so they get a bigger budget to keep the wait reasonable.
+  function inflightLimit() {
+    var cfg = LAYERS[state.layer];
+    return (cfg && cfg.maxInflight) || MAX_INFLIGHT;
+  }
+
   function pumpQueue() {
-    if (inflight >= MAX_INFLIGHT || pendingQueue.length === 0) return;
+    var limit = inflightLimit();
+    if (inflight >= limit || pendingQueue.length === 0) return;
 
     // Re-sort so the tiles closest to the crosshair go first.
     if (pendingQueue.length > 1) {
@@ -641,7 +657,7 @@
       pendingQueue.sort(function (a, b) { return a._p - b._p; });
     }
 
-    while (inflight < MAX_INFLIGHT && pendingQueue.length) {
+    while (inflight < limit && pendingQueue.length) {
       var rec = pendingQueue.shift();
 
       // dropped while waiting (level changed, panned away, layer switched)
@@ -707,6 +723,23 @@
 
     var url = tileUrl(state.layer, z, wx, y);
 
+    attachTileHandlers(rec);
+
+    // position in activeZ space, relative to renderOrigin (keeps it small)
+    placeTile(rec);
+
+    queueTile(rec, url);
+
+    tilesBox.appendChild(img);
+    stats.tiles++;
+  }
+
+  // Bind load/error handlers for a tile record. Extracted so a layer
+  // switch can detach, clear src, and re-arm without losing state.
+  function attachTileHandlers(rec) {
+    var img = rec.img;
+    var url = rec.url || '';
+
     img.onload = function () {
       rec.ready = true;
       rec.loading = false;
@@ -717,15 +750,18 @@
       maybeDropPrevLevel();
       maybeHideLoader();
     };
+
     img.onerror = function () {
       rec.loading = false;
       if (rec._wd) { clearTimeout(rec._wd); rec._wd = null; }
+
       // one quiet retry - transient timeouts are common on flaky links
       if (rec.tries < 1) {
         rec.tries++;
-        var retryUrl = url + (url.indexOf('?') < 0 ? '?' : '&') + '_r=' + rec.tries;
+        var base = rec.url || url;
+        var retryUrl = base + (base.indexOf('?') < 0 ? '?' : '&') + '_r=' + rec.tries;
         setTimeout(function () {
-          if (tileMap[key] === rec) {
+          if (tileMap[rec.key] === rec) {
             rec.url = retryUrl;
             queueTile(rec, retryUrl);
             pumpQueue();
@@ -734,19 +770,12 @@
         releaseSlot();
         return;
       }
+
       if (rec.counted) { stats.pending--; rec.counted = false; }
       img.classList.remove('ready');
       releaseSlot();
       maybeHideLoader();
     };
-
-    // position in activeZ space, relative to renderOrigin (keeps it small)
-    placeTile(rec);
-
-    queueTile(rec, url);
-
-    tilesBox.appendChild(img);
-    stats.tiles++;
   }
 
   // Put a tile at its position relative to renderOrigin.
@@ -1143,6 +1172,41 @@
     toastTimer = setTimeout(function () {
       toastEl.classList.remove('show');
     }, 1600);
+  }
+
+  // ============================================================
+  //  Layer availability watchdog
+  //
+  //  Some Esri layers return a valid-looking 2.5 KB "Map data not yet
+  //  available" placeholder for China instead of a 404, so they load
+  //  without error yet show nothing. Rather than leave the user staring
+  //  at a grey screen, watch the active level after a switch and warn
+  //  when almost nothing came back.
+  // ============================================================
+  var availTimer = null;
+
+  function watchLayerAvailability(key) {
+    if (availTimer) clearTimeout(availTimer);
+
+    availTimer = setTimeout(function () {
+      availTimer = null;
+      if (state.layer !== key) return;
+
+      var total = 0, ready = 0;
+      for (var k in tileMap) {
+        if (!tileMap.hasOwnProperty(k)) continue;
+        if (tileMap[k].z !== activeZ) continue;
+        total++;
+        if (tileMap[k].ready) ready++;
+      }
+
+      // nothing loaded at all, or the queue is stuck -> tell the user
+      if (total > 0 && ready / total < 0.35) {
+        toast(lang === 'zh'
+          ? '\u8fd9\u4e2a\u56fe\u5c42\u5728\u6b64\u533a\u57df\u53ef\u80fd\u6ca1\u6709\u6570\u636e'
+          : 'This layer may have no data here');
+      }
+    }, 5000);
   }
 
   // ============================================================
@@ -1718,16 +1782,27 @@
   // one-line notes stay in sync with the data.
   function renderLayerList() {
     var box = document.getElementById('layerList');
-    var html = '';
+    var fast = '', slow = '';
 
     for (var key in LAYERS) {
       if (!LAYERS.hasOwnProperty(key)) continue;
-      html +=
+      var btn =
         '<button data-layer="' + key + '"' +
         (key === state.layer ? ' class="on"' : '') + '>' +
           '<span class="ln">' + layerName(key) + '</span>' +
           '<span class="ld">' + layerNote(key) + '</span>' +
         '</button>';
+      if (LAYERS[key].slow) slow += btn;
+      else fast += btn;
+    }
+
+    // Slow layers live behind a separator so it is obvious they are a
+    // deliberate second choice, not the recommended default.
+    var html = fast;
+    if (slow) {
+      html += '<div class="slowsep">' +
+              (lang === 'zh' ? '\u8f83\u6162\u56fe\u5c42' : 'Slower layers') +
+              '</div>' + slow;
     }
 
     html +=
@@ -1778,18 +1853,33 @@
         if (!rec) continue;
         var maxIdx = Math.pow(2, rec.z) - 1;
         var wx = ((rec.x % (maxIdx + 1)) + (maxIdx + 1)) % (maxIdx + 1);
+
+        // Detach handlers BEFORE clearing src. Assigning src='' fires the
+        // error event synchronously in some browsers, which used to wipe
+        // rec.ready and leave the whole level stuck at ratio 0.
+        rec.img.onload = null;
+        rec.img.onerror = null;
+        rec.img.src = '';
+        rec.img.classList.remove('ready');
+
         rec.ready = false;
         rec.loading = false;
         rec.tries = 0;
-        rec.img.classList.remove('ready');
-        rec.img.src = '';
-        queueTile(rec, tileUrl(key, rec.z, wx, rec.y));
+        rec.url = tileUrl(key, rec.z, wx, rec.y);
+
+        // re-arm the handlers for the new source
+        attachTileHandlers(rec);
+        queueTile(rec, rec.url);
+
+        // this tile is loading again, so it counts towards pending once more
+        if (!rec.counted) { stats.pending++; rec.counted = true; }
       }
     }
 
     updateLayerUI(key);
     requestRender(true);
     pumpQueue();
+    watchLayerAvailability(key);
     if (!quiet) toast(layerName(key));
     return true;
   }
