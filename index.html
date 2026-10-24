@@ -904,6 +904,9 @@
     var left = cx - vw / 2;
     var top = cy - vh / 2;
 
+    // Use floor() on both edges without subtracting 1: any tile that
+    // touches the viewport - even by a single pixel - must be included,
+    // otherwise a sliver of the next tile stays blank at the edges.
     return {
       z: z,
       left: left,
@@ -912,8 +915,8 @@
       vh: vh,
       x0: Math.floor(left / TILE) - PAD,
       y0: Math.floor(top / TILE) - PAD,
-      x1: Math.floor((left + vw - 1) / TILE) + PAD,
-      y1: Math.floor((top + vh - 1) / TILE) + PAD
+      x1: Math.floor((left + vw) / TILE) + PAD,
+      y1: Math.floor((top + vh) / TILE) + PAD
     };
   }
 
@@ -925,8 +928,14 @@
   function needsFill(r) {
     if (!lastRect) return true;
     if (lastRect.z !== r.z) return true;
-    if (r.x0 < lastRect.x0 || r.x1 > lastRect.x1) return true;
-    if (r.y0 < lastRect.y0 || r.y1 > lastRect.y1) return true;
+
+    // Any change in the covered tile range needs a refill - not just a
+    // growing range. When panning, the leading edge can shift by one tile
+    // while the far edge also shifts, keeping the span identical; comparing
+    // only the outer bounds missed that and left a blank column.
+    if (r.x0 !== lastRect.x0 || r.x1 !== lastRect.x1) return true;
+    if (r.y0 !== lastRect.y0 || r.y1 !== lastRect.y1) return true;
+
     return false;
   }
 
@@ -1263,12 +1272,26 @@
   //     screen = (world - lt.left) * s
   //  so world = screen / s + lt.left
   // ============================================================
+  // Convert a screen point to lon/lat.
+  //
+  //  IMPORTANT: everything here must work in the SAME datum the tiles are
+  //  drawn in. viewRect()/viewLeftTop() use centerInLayer(), which shifts
+  //  the centre into GCJ-02 for Amap layers. Deriving the readout from the
+  //  raw WGS-84 state.center instead made the crosshair readout differ from
+  //  what was actually drawn by the full GCJ offset (~200-500 m in China).
   function screenToLatLng(px, py) {
     var z = activeZ;
-    var s = Math.pow(2, state.zoom - z);
-    var lt = viewLeftTop(z);
-    var wx = px / s + lt.left;
-    var wy = py / s + lt.top;
+    var s = Math.pow(2, state.zoom - z);   // zoom relative to tile level
+
+    // activeZ-space offset of the pointer from the crosshair
+    var dx = (px - viewport.clientWidth / 2) / s;
+    var dy = (py - viewport.clientHeight / 2) / s;
+
+    // centre in the layer's own datum, rescaled into activeZ space
+    var ratio = Math.pow(2, z - state.zoom);
+    var c = centerInLayer();
+    var wx = c.x * ratio + dx;
+    var wy = c.y * ratio + dy;
 
     var lat = worldYToLat(wy, z);
     var lng = worldXToLng(wx, z);
@@ -1286,10 +1309,24 @@
   // put while everything else slid away, which is disorienting when the
   // crosshair is what marks your position. With a centre anchor the ground
   // under the crosshair is invariant, so the map grows/shrinks in place.
+  // Zoom and drag are mutually exclusive: a zoom sets this for a short
+  // settle window during which a drag cannot start, and a drag blocks the
+  // wheel. Without it the two gestures fought over state.center.
+  var zooming = false;
+  var zoomSettleTimer = null;
+
   function zoomBy(delta) {
     var oldZoom = state.zoom;
     var newZoom = Math.max(MIN_Z, Math.min(MAX_Z, oldZoom + delta));
     if (newZoom === oldZoom) return;
+
+    // mark the gesture as in progress so a drag cannot start mid-zoom
+    zooming = true;
+    if (zoomSettleTimer) clearTimeout(zoomSettleTimer);
+    zoomSettleTimer = setTimeout(function () {
+      zooming = false;
+      zoomSettleTimer = null;
+    }, 260);
 
     // state.center is stored in world pixels AT the current zoom level, so
     // the stored value has to be rescaled together with the level. Without
@@ -1311,6 +1348,9 @@
 
   viewport.addEventListener('mousedown', function (e) {
     if (e.button !== 0) return;
+    // Don't start a drag while a zoom is still settling: the two would
+    // fight over state.center and the map would lurch.
+    if (zooming) return;
     dragging = true;
     dragStart = {
       x: e.clientX, y: e.clientY,
@@ -1404,6 +1444,10 @@
 
   viewport.addEventListener('wheel', function (e) {
     e.preventDefault();
+
+    // Dragging wins: ignore wheel input until the drag ends, otherwise the
+    // two gestures interleave and the centre jumps.
+    if (dragging) return;
 
     var step = e.deltaMode === 1 ? 0.25 : 0.15;
     wheelAccum += (e.deltaY > 0 ? -step : step);
