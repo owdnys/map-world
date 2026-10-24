@@ -2,13 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
 <title>World Map - Static</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { width: 100%; height: 100%; overflow: hidden;
     font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
     background: #e8eef3; }
+  /* Mobile browsers: 100% of the visual viewport, so the toolbar area
+     does not push the crosshair off-centre. Falls back to 100%. */
+  html, body { height: 100dvh; }
+  #viewport { height: 100dvh; }
 
   /* ============ Map viewport ============ */
   #viewport {
@@ -38,20 +42,95 @@
   }
   #tiles img.ready { opacity: 1; }
 
-  /* ============ Top bar ============ */
-  #topbar {
-    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-    z-index: 100; display: flex; align-items: center; gap: 8px;
-    padding: 8px 10px; border-radius: 12px;
-    background: rgba(255,255,255,.96);
-    box-shadow: 0 4px 20px rgba(0,0,0,.16);
-    backdrop-filter: blur(10px);
-    max-width: calc(100vw - 24px);
+  /* ============ Side rail: the only always-visible chrome ============
+     Everything else lives in a sheet that slides out when one of these
+     buttons is pressed, so the map is never covered by bars. */
+  #rail {
+    position: fixed; left: 12px; top: 50%; transform: translateY(-50%);
+    z-index: 160;
+    display: flex; flex-direction: column; gap: 8px;
   }
+  .rail-btn {
+    position: relative;
+    width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px solid rgba(255,255,255,.55);
+    border-radius: 13px;
+    background: rgba(255,255,255,.95);
+    color: #334155; font-size: 18px; line-height: 1;
+    font-family: inherit; cursor: pointer;
+    box-shadow: 0 3px 14px rgba(15,23,42,.18);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    transition: background .15s, color .15s, transform .12s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .rail-btn:hover { background: #f4f7fb; }
+  .rail-btn:active { transform: scale(.93); }
+  .rail-btn.on { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .rail-btn .badge {
+    position: absolute; top: -5px; right: -5px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 8px; background: #16a34a; color: #fff;
+    font-size: 10px; line-height: 16px; text-align: center; font-weight: 600;
+  }
+
+  /* ============ Sheets (slide-out panels) ============ */
+  .sheet {
+    position: fixed; z-index: 170;
+    display: flex; flex-direction: column; gap: 8px;
+    width: 292px; max-height: calc(100vh - 32px);
+    padding: 12px; border-radius: 16px;
+    background: rgba(255,255,255,.97);
+    box-shadow: 0 10px 44px rgba(15,23,42,.26);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    overflow-y: auto; overscroll-behavior: contain;
+    opacity: 0; pointer-events: none;
+    transition: transform .2s cubic-bezier(.2,.8,.3,1), opacity .18s;
+  }
+  .sheet.left {
+    left: 68px; top: 50%;
+    transform: translateY(-50%) translateX(-16px);
+  }
+  .sheet.right {
+    right: 12px; top: 50%;
+    transform: translateY(-50%) translateX(16px);
+  }
+  .sheet.open {
+    opacity: 1; pointer-events: auto;
+    transform: translateY(-50%) translateX(0);
+  }
+
+  .sheet-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 0 2px 2px;
+    font-size: 10.5px; letter-spacing: .6px; font-weight: 700;
+    text-transform: uppercase; color: #94a3b8;
+  }
+  .sheet-x {
+    flex: 0 0 auto;
+    border: none; background: transparent; color: #94a3b8;
+    font-size: 20px; line-height: 1; width: 28px; height: 28px;
+    border-radius: 8px; cursor: pointer; font-family: inherit;
+  }
+  .sheet-x:hover { background: #f1f5f9; color: #334155; }
+  .sheet .row { display: flex; align-items: center; gap: 8px; }
+  .sheet .row .btn { flex: 1 1 0; text-align: center; }
+
+  /* Backdrop behind an open sheet: tap anywhere to close. */
+  #scrim {
+    position: fixed; inset: 0; z-index: 165;
+    background: rgba(15,23,42,.32);
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #scrim.on { opacity: 1; pointer-events: auto; }
 
   /* Coordinate jump box */
   #gotoInput {
-    width: 190px; padding: 8px 10px;
+    width: 100%; padding: 9px 10px;
     border: 1px solid #d8dee6; border-radius: 8px;
     font-size: 12px; font-family: Consolas, monospace;
     color: #334155; outline: none;
@@ -82,29 +161,21 @@
   .sep { width: 1px; height: 22px; background: #e2e8f0; margin: 0 2px; }
 
   /* ============ Layer switcher ============ */
-  #layers {
-    position: fixed; right: 12px; top: 76px; z-index: 100;
-    display: flex; flex-direction: column; gap: 5px;
-    padding: 8px; border-radius: 11px;
-    background: rgba(255,255,255,.96);
-    box-shadow: 0 4px 20px rgba(0,0,0,.16);
-    backdrop-filter: blur(10px);
-  }
   #layers .title {
     font-size: 10.5px; color: #94a3b8; padding: 1px 5px 4px;
     letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
   }
-  #layers button {
+  #layerList button {
     padding: 6px 12px; border: none; border-radius: 7px;
     background: transparent; color: #475569; font-size: 12.5px;
     cursor: pointer; text-align: left; white-space: nowrap;
     transition: all .12s; font-family: inherit;
     display: block; width: 100%;
   }
-  #layers button:hover { background: #f1f5f9; color: #1e293b; }
-  #layers button.on { background: #3b82f6; color: #fff; }
-  #layers button.on .ld { color: rgba(255,255,255,.8); }
-  #layers button.on .ln { font-weight: 600; }
+  #layerList button:hover { background: #f1f5f9; color: #1e293b; }
+  #layerList button.on { background: #3b82f6; color: #fff; }
+  #layerList button.on .ld { color: rgba(255,255,255,.8); }
+  #layerList button.on .ln { font-weight: 600; }
 
   #layers .ln { display: block; line-height: 1.35; }
   #layers .ld {
@@ -202,31 +273,11 @@
   #foot .chip.cursor b { color: #16a34a; }
 
   /* ============ Bookmarks ============ */
-  #bookmarks {
-    position: fixed; left: 12px; top: 76px; z-index: 100;
-    width: 230px; max-height: 48vh;
-    display: none; flex-direction: column;
-    border-radius: 11px; overflow: hidden;
-    background: rgba(255,255,255,.96);
-    box-shadow: 0 4px 20px rgba(0,0,0,.16);
-    backdrop-filter: blur(10px);
-  }
-  #bookmarks.show { display: flex; }
-
-  #bookmarks .bm-head {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 7px 10px 6px;
-    font-size: 10.5px; color: #94a3b8;
-    letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
-    border-bottom: 1px solid #eef2f7;
-  }
-  #bookmarks .bm-head span { color: #cbd5e1; font-weight: 500; letter-spacing: 0; text-transform: none; }
-
-  #bookmarks .bm-list { overflow-y: auto; padding: 4px; }
+  #bookmarks .bm-list { overflow-y: auto; padding: 2px; }
 
   .bm-item {
     display: flex; align-items: center; gap: 6px;
-    padding: 7px 8px; border-radius: 7px;
+    padding: 8px; border-radius: 8px;
     cursor: pointer; transition: background .12s;
   }
   .bm-item:hover { background: #eff6ff; }
@@ -248,8 +299,8 @@
   }
   .bm-item .bm-del {
     flex: 0 0 auto; padding: 2px 5px; border: none;
-    background: transparent; color: #cbd5e1;
-    font-size: 14px; line-height: 1; cursor: pointer; border-radius: 4px;
+    background: transparent; color: #94a3b8;
+    font-size: 15px; line-height: 1; cursor: pointer; border-radius: 4px;
   }
   .bm-item .bm-del:hover { background: #fee2e2; color: #dc2626; }
 
@@ -258,11 +309,47 @@
     font-size: 11.5px; color: #94a3b8; line-height: 1.6;
   }
 
-  @media (max-width: 640px) {
-    #layers { top: auto; bottom: 56px; }
-    .chip { font-size: 11px; padding: 6px 9px; }
-    #bookmarks { top: 64px; width: 190px; max-height: 38vh; }
-    #foot .chip.cursor { min-width: 0; }
+  /* ============ Phone layout ============
+     The rail moves to the bottom (thumb reach) and every sheet becomes a
+     bottom sheet, so nothing covers the crosshair while panning. */
+  @media (max-width: 900px) {
+    #rail {
+      left: 50%; top: auto; bottom: 58px;
+      transform: translateX(-50%);
+      flex-direction: row; gap: 9px;
+    }
+    .rail-btn { width: 46px; height: 46px; border-radius: 14px; font-size: 19px; }
+
+    .sheet.left, .sheet.right {
+      left: 50%; right: auto;
+      top: auto; bottom: 10px;
+      width: calc(100% - 20px); max-width: 560px;
+      transform: translateX(-50%) translateY(20px);
+      max-height: 72vh; border-radius: 18px;
+      padding: 14px;
+    }
+    .sheet.open { transform: translateX(-50%) translateY(0); }
+
+    #foot { left: 10px; right: 10px; bottom: 10px; gap: 6px; }
+    #foot .chip.cursor { display: none; }
+    .chip { font-size: 10.5px; padding: 5px 8px; }
+
+    #credit { display: none; }
+
+    #crosshair { width: 40px; height: 40px; margin: -20px 0 0 -20px; }
+
+    #toast { bottom: 118px; font-size: 12px; }
+
+    .btn { padding: 10px 12px; font-size: 13.5px; }
+    #gotoInput { font-size: 13px; }
+    .bm-item { padding: 10px 8px; }
+    .bm-item .bm-del { padding: 6px 8px; }
+  }
+
+  /* Landscape phones are wider than the breakpoint; the only real problem
+     there is vertical room, so cap the sheets instead of moving them. */
+  @media (max-height: 480px) {
+    .sheet { max-height: calc(100vh - 16px); }
   }
 </style>
 </head>
@@ -276,34 +363,61 @@
   <i class="ch-h"></i><i class="ch-v"></i>
 </div>
 
-<div id="topbar">
-  <button class="btn icon" id="zoomOut" data-i18n-title="zoomOut" title="Zoom out">&minus;</button>
-  <div id="zoomLabel">Zoom 4</div>
-  <button class="btn icon" id="zoomIn" data-i18n-title="zoomIn" title="Zoom in">+</button>
-  <div class="sep"></div>
-  <button class="btn" id="btnReset" data-i18n="reset" data-i18n-title="resetTip" title="Reset view">Reset</button>
-  <button class="btn" id="btnLocate" data-i18n="locate" data-i18n-title="locateTip" title="Find my location">Locate</button>
-  <button class="btn" id="btnSave" data-i18n="save" data-i18n-title="saveTip" title="Save cursor position (Ctrl+D)">&#9734; Save</button>
-  <div class="sep"></div>
-  <input id="gotoInput" data-i18n-ph="gotoPh" placeholder="lat, lon  e.g. 13.58,144.92" autocomplete="off"
-         spellcheck="false" data-i18n-title="gotoTip" title="Type coordinates and press Enter">
-  <div class="sep"></div>
-  <button class="btn" id="btnLang" title="Switch language">中文</button>
+<div id="rail">
+  <button class="rail-btn" id="railZoomIn" data-i18n-title="zoomIn" title="Zoom in">+</button>
+  <button class="rail-btn" id="railZoomOut" data-i18n-title="zoomOut" title="Zoom out">&minus;</button>
+  <button class="rail-btn" id="railTools" data-i18n-title="toolsTip" title="Tools">&#9776;</button>
+  <button class="rail-btn" id="railLayers" data-i18n-title="layersTip" title="Layers">&#9638;</button>
+  <button class="rail-btn" id="railMarks" data-i18n-title="marksTip" title="Bookmarks">&#9733;<span class="badge" id="markCount" hidden>0</span></button>
 </div>
 
-<div id="layers">
-  <div class="title" data-i18n="layers">Layers</div>
+<div id="scrim"></div>
+
+<!-- Tools drawer -->
+<div class="sheet left" id="sheetTools">
+  <div class="sheet-head">
+    <span data-i18n="tools">Tools</span>
+    <button class="sheet-x" data-close="1" title="Close" aria-label="Close">&times;</button>
+  </div>
+  <div class="row">
+    <button class="btn icon" id="zoomOut" data-i18n-title="zoomOut" title="Zoom out">&minus;</button>
+    <div id="zoomLabel">Zoom 4</div>
+    <button class="btn icon" id="zoomIn" data-i18n-title="zoomIn" title="Zoom in">+</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="btnReset" data-i18n="reset" data-i18n-title="resetTip" title="Reset view">Reset</button>
+    <button class="btn" id="btnLocate" data-i18n="locate" data-i18n-title="locateTip" title="Find my location">Locate</button>
+  </div>
+  <div class="row">
+    <button class="btn" id="btnSave" data-i18n-title="saveTip" title="Save cursor position (Ctrl+D)"><span aria-hidden="true">&#9734;</span> <span data-i18n="save">Save</span></button>
+    <button class="btn" id="btnLang" title="Switch language">&#20013;&#25991;</button>
+  </div>
+  <input id="gotoInput" data-i18n-ph="gotoPh" placeholder="lat, lon  e.g. 13.58,144.92" autocomplete="off"
+         spellcheck="false" data-i18n-title="gotoTip" title="Type coordinates and press Enter">
+</div>
+
+<!-- Layer drawer -->
+<div class="sheet right" id="layers">
+  <div class="sheet-head">
+    <span data-i18n="layers">Layers</span>
+    <button class="sheet-x" data-close="1" title="Close" aria-label="Close">&times;</button>
+  </div>
   <div id="layerList"></div>
 </div>
 
-<div id="bookmarks">
-  <div class="bm-head"><span id="bm-title">Bookmarks</span> <span id="bm-count">0</span></div>
+<!-- Bookmarks drawer -->
+<div class="sheet left" id="bookmarks">
+  <div class="sheet-head">
+    <span><span id="bm-title">Bookmarks</span> &middot; <span id="bm-count">0</span></span>
+    <button class="sheet-x" data-close="1" title="Close" aria-label="Close">&times;</button>
+  </div>
   <div class="bm-list" id="bm-list"></div>
 </div>
 
 <div id="foot">
   <div class="chip cursor" id="chip-cursor"><span data-i18n="cursor">Cursor</span>&nbsp; <b id="m-lat">&mdash;</b>, <b id="m-lng">&mdash;</b></div>
   <div class="chip"><span data-i18n="center">Center</span> <b id="c-lat">&mdash;</b>, <b id="c-lng">&mdash;</b></div>
+  <div class="chip" id="zoomChip">Z 4.0</div>
 </div>
 
 <div id="credit">&copy; OpenStreetMap &middot; Amap &middot; Esri</div>
@@ -1297,6 +1411,10 @@
     zoomLabel.textContent =
       (typeof lang !== 'undefined' && lang === 'zh' ? '\u7f29\u653e ' : 'Zoom ') +
       state.zoom.toFixed(1);
+    // The tools drawer is usually closed, so the level also lives in a
+    // always-visible chip at the bottom.
+    var zc = document.getElementById('zoomChip');
+    if (zc) zc.textContent = 'Z ' + state.zoom.toFixed(1);
     // keep the cursor/centre readout in sync after any view change
     if (typeof renderCursor === 'function') renderCursor();
   }
@@ -1509,6 +1627,7 @@
   document.getElementById('zoomOut').addEventListener('click', function () { zoomBy(-1); });
   document.getElementById('btnReset').addEventListener('click', function () {
     setView(HOME.lat, HOME.lng, HOME.zoom);
+    closeSheets();
     toast(t('viewReset'));
   });
 
@@ -1522,6 +1641,7 @@
     navigator.geolocation.getCurrentPosition(
       function (pos) {
         setView(pos.coords.latitude, pos.coords.longitude, 17);
+        closeSheets();
         toast(t('located'));
       },
       function () {
@@ -1530,6 +1650,56 @@
       { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
     );
   });
+
+  // ============================================================
+  //  Drawers (tool / layer / bookmark panels)
+  //
+  //  The map owns the whole viewport: the rail on the edge is the only
+  //  permanent chrome, and every panel is opt-in. On a phone the rail
+  //  drops to the bottom edge and the panels become bottom sheets, so
+  //  nothing covers the crosshair while panning.
+  // ============================================================
+  var scrim = document.getElementById('scrim');
+  var SHEETS = {
+    tools:  { box: document.getElementById('sheetTools'), btn: document.getElementById('railTools') },
+    layers: { box: document.getElementById('layers'),     btn: document.getElementById('railLayers') },
+    marks:  { box: document.getElementById('bookmarks'),  btn: document.getElementById('railMarks') }
+  };
+  var openSheetName = null;
+
+  function closeSheets() {
+    for (var k in SHEETS) {
+      if (!SHEETS.hasOwnProperty(k)) continue;
+      SHEETS[k].box.classList.remove('open');
+      SHEETS[k].btn.classList.remove('on');
+    }
+    scrim.classList.remove('on');
+    openSheetName = null;
+  }
+
+  function toggleSheet(name) {
+    var target = SHEETS[name];
+    if (!target) return;
+    var wasOpen = (openSheetName === name);
+    closeSheets();
+    if (wasOpen) return;
+    target.box.classList.add('open');
+    target.btn.classList.add('on');
+    scrim.classList.add('on');
+    target.box.scrollTop = 0;
+    openSheetName = name;
+  }
+
+  scrim.addEventListener('click', closeSheets);
+  Array.prototype.forEach.call(document.querySelectorAll('.sheet-x'), function (b) {
+    b.addEventListener('click', closeSheets);
+  });
+
+  document.getElementById('railTools').addEventListener('click', function () { toggleSheet('tools'); });
+  document.getElementById('railLayers').addEventListener('click', function () { toggleSheet('layers'); });
+  document.getElementById('railMarks').addEventListener('click', function () { toggleSheet('marks'); });
+  document.getElementById('railZoomIn').addEventListener('click', function () { zoomBy(0.5); });
+  document.getElementById('railZoomOut').addEventListener('click', function () { zoomBy(-0.5); });
 
   // ============================================================
   //  Cursor readout + bookmarks
@@ -1543,6 +1713,7 @@
   var bmBox = document.getElementById('bookmarks');
   var bmList = document.getElementById('bm-list');
   var bmCount = document.getElementById('bm-count');
+  var markCount = document.getElementById('markCount');
 
   var bookmarks = [];          // [{ lat, lng, zoom }]
   var cursorLL = null;         // last lon/lat under the pointer
@@ -1581,13 +1752,17 @@
   function renderBookmarks() {
     bmCount.textContent = bookmarks.length;
 
+    // The rail badge is the only hint that something is stored, since the
+    // panel itself stays closed until asked for.
+    markCount.textContent = bookmarks.length;
+    if (bookmarks.length) markCount.removeAttribute('hidden');
+    else markCount.setAttribute('hidden', '');
+
     if (bookmarks.length === 0) {
-      bmBox.classList.remove('show');
-      bmList.innerHTML = '';
+      bmList.innerHTML = '<div class="bm-empty">' + t('emptyList') + '</div>';
       return;
     }
 
-    bmBox.classList.add('show');
     var html = '';
     for (var i = 0; i < bookmarks.length; i++) {
       var b = bookmarks[i];
@@ -1644,6 +1819,7 @@
 
     bookmarks.push({ lat: lat, lng: lng, zoom: state.zoom });
     renderBookmarks();
+    if (openSheetName !== 'marks') toggleSheet('marks');
     toast(t('saved') + ' #' + bookmarks.length);
   }
 
@@ -1701,6 +1877,7 @@
     toast(fmtLat(v.lat) + '   ' + fmtLng(v.lng));
 
     setView(v.lat, v.lng, 16);
+    closeSheets();
   }
 
   gotoInput.addEventListener('keydown', function (e) {
@@ -1727,8 +1904,9 @@
     }
   });
 
-  renderCursor();
-  renderBookmarks();
+  // The readout and the bookmark list are painted by applyLanguage() at
+  // start-up: both need the dictionaries (t()), which are declared below.
+  // Calling them here would run before `var I18N` is assigned and throw.
 
   // ============================================================
   //  Language
@@ -1740,6 +1918,10 @@
   var I18N = {
     en: {
       layers: 'Layers',
+      tools: 'Tools',
+      toolsTip: 'Tools',
+      layersTip: 'Layers',
+      marksTip: 'Bookmarks',
       reset: 'Reset',
       resetTip: 'Back to the starting view',
       locate: 'Locate',
@@ -1772,6 +1954,10 @@
     },
     zh: {
       layers: '\u56fe\u5c42',
+      tools: '\u5de5\u5177',
+      toolsTip: '\u5de5\u5177',
+      layersTip: '\u56fe\u5c42',
+      marksTip: '\u6536\u85cf',
       reset: '\u56de\u5230\u8d77\u70b9',
       resetTip: '\u8fd4\u56de\u521d\u59cb\u89c6\u89d2',
       locate: '\u5b9a\u4f4d',
@@ -1892,6 +2078,9 @@
     box.querySelectorAll('button').forEach(function (b) {
       b.addEventListener('click', function () {
         switchLayer(this.getAttribute('data-layer'));
+        // The panel was only opened to make this choice: get it out of
+        // the way again so the map is visible immediately.
+        closeSheets();
       });
     });
   }
@@ -1979,6 +2168,10 @@
   // ============================================================
   window.addEventListener('keydown', function (e) {
     if (isTyping(e)) return;   // arrows/+/- belong to the input, not the map
+    if (e.key === 'Escape') {
+      if (openSheetName) { closeSheets(); e.preventDefault(); }
+      return;
+    }
     var step = 120;
     if (e.key === '+' || e.key === '=') { zoomBy(0.5); e.preventDefault(); }
     else if (e.key === '-' || e.key === '_') { zoomBy(-0.5); e.preventDefault(); }
@@ -1992,6 +2185,7 @@
   //  Start
   // ============================================================
   applyLanguage();       // build the layer list + translate the chrome
+  renderCursor();
   setView(HOME.lat, HOME.lng, HOME.zoom);
 
   setTimeout(function () {
