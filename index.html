@@ -571,6 +571,13 @@
   // ------------------------------------------------------------
   var renderOrigin = { x: 0, y: 0, z: -1 };
 
+  // Zoom and drag are mutually exclusive: a zoom sets this for a short
+  // settle window during which a drag cannot start, and a drag blocks the
+  // wheel. Without it the two gestures fought over state.center.
+  // Declared here (not next to zoomBy) because ensureOrigin consults it.
+  var zooming = false;
+  var zoomSettleTimer = null;
+
   var stats = {
     tiles: 0,
     pending: 0,
@@ -627,14 +634,18 @@
   }
 
   // Distance from the viewport centre, used to load the middle first.
+  // Both scales are applied so this really is a screen distance:
+  // rec.z -> activeZ (tileScale) -> CSS pixels (sView).
   function queuePriority(rec) {
     var vw = viewport.clientWidth, vh = viewport.clientHeight;
     var s = tileScale(rec.z);
+    var sView = Math.pow(2, state.zoom - activeZ);
     var lt = viewLeftTop(activeZ);
-    var sx = (rec.x * TILE * s - lt.left * s) / s;
-    var sy = (rec.y * TILE * s - lt.top * s) / s;
-    var dx = sx + TILE / 2 - vw / 2;
-    var dy = sy + TILE / 2 - vh / 2;
+    var half = (TILE * s * sView) / 2;
+    var sx = (rec.x * TILE * s - lt.left) * sView + half;
+    var sy = (rec.y * TILE * s - lt.top) * sView + half;
+    var dx = sx - vw / 2;
+    var dy = sy - vh / 2;
     return dx * dx + dy * dy;
   }
 
@@ -865,9 +876,15 @@
     var c = centerInLayer();
     var cx = c.x * ratio;
     var cy = c.y * ratio;
+
+    // Level z is drawn scaled by (1 / ratio), so a CSS viewport of vw px
+    // covers vw * ratio pixels of level z. Halving the RAW viewport width
+    // instead ignored that scale: while the zoom sat between two integer
+    // levels the grid drifted off-centre by (s - 1) * centre, which is
+    // exactly the "zoom centre jumps" bug.
     return {
-      left: cx - viewport.clientWidth / 2,
-      top: cy - viewport.clientHeight / 2
+      left: cx - (viewport.clientWidth * ratio) / 2,
+      top: cy - (viewport.clientHeight * ratio) / 2
     };
   }
 
@@ -879,10 +896,16 @@
     var ox = Math.floor(lt.left / TILE) * TILE - TILE;
     var oy = Math.floor(lt.top / TILE) * TILE - TILE;
 
-    if (renderOrigin.z === z &&
-        Math.abs(renderOrigin.x - ox) < TILE &&
-        Math.abs(renderOrigin.y - oy) < TILE) {
-      return false;
+    // While the zoom is still settling, do NOT snap the origin to a tile
+    // boundary. Snapping moves the container by up to a tile, which is the
+    // visible "jump" right when zoom crosses an integer level. Keep the
+    // carried-over origin and only snap once the gesture has stopped.
+    if (renderOrigin.z === z) {
+      if (zooming) return false;
+      if (Math.abs(renderOrigin.x - ox) < TILE &&
+          Math.abs(renderOrigin.y - oy) < TILE) {
+        return false;
+      }
     }
 
     renderOrigin.x = ox;
@@ -901,8 +924,12 @@
     var c = centerInLayer();
     var cx = c.x * ratio;
     var cy = c.y * ratio;
-    var left = cx - vw / 2;
-    var top = cy - vh / 2;
+
+    // Covered extent in level-z pixels (see viewLeftTop).
+    var w = vw * ratio;
+    var h = vh * ratio;
+    var left = cx - w / 2;
+    var top = cy - h / 2;
 
     // Use floor() on both edges without subtracting 1: any tile that
     // touches the viewport - even by a single pixel - must be included,
@@ -911,12 +938,12 @@
       z: z,
       left: left,
       top: top,
-      vw: vw,
-      vh: vh,
+      vw: w,
+      vh: h,
       x0: Math.floor(left / TILE) - PAD,
       y0: Math.floor(top / TILE) - PAD,
-      x1: Math.floor((left + vw) / TILE) + PAD,
-      y1: Math.floor((top + vh) / TILE) + PAD
+      x1: Math.floor((left + w) / TILE) + PAD,
+      y1: Math.floor((top + h) / TILE) + PAD
     };
   }
 
@@ -1069,9 +1096,19 @@
     // demote the current level to backdrop instead of dropping it
     backdropZ[activeZ] = true;
 
+    // Rebuild the origin for the new level from the CURRENT view position.
+    // Carrying it over (or resetting it) both went wrong: the origin is in
+    // activeZ-space pixels, so its meaning changes with the level, and any
+    // stale value shifts the whole tile grid - which is what made the map
+    // slide sideways the moment zoom crossed an integer level.
     activeZ = z;
+
+    var lt = viewLeftTop(z);           // view corner in the NEW level's space
+    renderOrigin.x = Math.floor(lt.left / TILE) * TILE - TILE;
+    renderOrigin.y = Math.floor(lt.top / TILE) * TILE - TILE;
+    renderOrigin.z = z;
+
     lastRect = null;   // force a refill for the new level
-    renderOrigin.z = -1;   // origin is level-specific, rebuild it
 
     relayoutTiles();
     scheduleBackdropSweep();
@@ -1309,12 +1346,6 @@
   // put while everything else slid away, which is disorienting when the
   // crosshair is what marks your position. With a centre anchor the ground
   // under the crosshair is invariant, so the map grows/shrinks in place.
-  // Zoom and drag are mutually exclusive: a zoom sets this for a short
-  // settle window during which a drag cannot start, and a drag blocks the
-  // wheel. Without it the two gestures fought over state.center.
-  var zooming = false;
-  var zoomSettleTimer = null;
-
   function zoomBy(delta) {
     var oldZoom = state.zoom;
     var newZoom = Math.max(MIN_Z, Math.min(MAX_Z, oldZoom + delta));
