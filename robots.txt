@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://map-world-lzx.pages.dev/sitemap.xml
